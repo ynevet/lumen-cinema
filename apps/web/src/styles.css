@@ -1,0 +1,1070 @@
+/* ==========================================================================
+   Lumen Cinema - box office
+   --------------------------------------------------------------------------
+   Direction: the page is a darkened auditorium. The seat map sits in the light
+   thrown by the screen; everything transactional (seat ids, row letters, the
+   countdown, the totals) is set in mono, like the dot-matrix print on a ticket
+   stub, while everything spoken to the customer is set in the UI sans. That
+   split is the type system - no decorative faces, no downloaded fonts, so the
+   app renders identically offline and inside Docker.
+   ========================================================================== */
+
+:root {
+  /* Auditorium */
+  --house: #14121a;
+  --house-deep: #0b0910;
+  --house-lift: #1e1a29;
+  --house-line: #2c2739;
+
+  /* Ticket paper */
+  --stub: #efe7d6;
+  --stub-shade: #d9cdb4;
+  --stub-ink: #1a1622;
+
+  /* Seat states */
+  --beam: #f0b429; /* the projector beam - and your own selection */
+  --beam-soft: #f7d488;
+  --velvet: #8c2f4c; /* booked - cinema velvet */
+  --slate: #55506a; /* held by somebody else */
+  --available: #8b83a6;
+
+  --text: #ece8f2;
+  --text-dim: #9b94ad;
+  --text-faint: #6a6480;
+
+  --danger: #e5604a;
+  --ok: #63b98a;
+
+  --sans: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue',
+    Arial, sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  --radius: 4px;
+  --shadow-lift: 0 18px 40px -24px rgb(0 0 0 / 90%);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(120% 70% at 50% -10%, #241f33 0%, transparent 55%),
+    var(--house-deep);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:where(button, a, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--beam);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Shared primitives
+   -------------------------------------------------------------------------- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.marquee-word {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.btn {
+  border: 1px solid var(--house-line);
+  background: var(--house-lift);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  font-size: 14px;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: #262038;
+  border-color: #3b3450;
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--beam);
+  border-color: var(--beam);
+  color: var(--stub-ink);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--beam-soft);
+  border-color: var(--beam-soft);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  padding: 6px 10px;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: rgb(255 255 255 / 6%);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.btn--block {
+  width: 100%;
+}
+
+/* --------------------------------------------------------------------------
+   Sign in
+   -------------------------------------------------------------------------- */
+
+.gate {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  padding: 24px;
+}
+
+.gate__inner {
+  display: grid;
+  place-items: center;
+}
+
+.gate__card {
+  width: min(420px, 100%);
+}
+
+.gate__brand {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.gate__brand-mark {
+  font-size: clamp(34px, 7vw, 52px);
+  line-height: 0.95;
+  color: var(--stub);
+}
+
+.gate__brand-mark span {
+  color: var(--beam);
+}
+
+.gate__brand-sub {
+  margin-top: 10px;
+}
+
+/* The paper stub the whole design is built around. */
+.stub {
+  position: relative;
+  background: var(--stub);
+  color: var(--stub-ink);
+  border-radius: 3px;
+  box-shadow: var(--shadow-lift);
+}
+
+/* Punched perforation down one edge, drawn rather than imaged. */
+.stub--perforated::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: -7px;
+  width: 14px;
+  background:
+    radial-gradient(circle at 7px 7px, transparent 6px, var(--stub) 6.5px) 0 0 / 14px 20px repeat-y;
+  pointer-events: none;
+}
+
+.gate__form {
+  padding: 28px 30px 30px;
+}
+
+.field {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.field__label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #6f6555;
+  margin-bottom: 6px;
+}
+
+.field__input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--stub-shade);
+  border-radius: 3px;
+  background: #f8f4ea;
+  color: var(--stub-ink);
+  font: inherit;
+}
+
+.field__input:focus {
+  outline: 2px solid var(--velvet);
+  outline-offset: 0;
+  border-color: var(--velvet);
+}
+
+.gate__submit {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: none;
+  border-radius: 3px;
+  background: var(--stub-ink);
+  color: var(--stub);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 13px;
+  transition: background 120ms ease;
+}
+
+.gate__submit:hover:not(:disabled) {
+  background: #2e2740;
+}
+
+.gate__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gate__switch {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 13.5px;
+  color: #6f6555;
+}
+
+.gate__switch button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--velvet);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.gate__error {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--velvet);
+  background: #f6e3e3;
+  color: #7a2438;
+  font-size: 13.5px;
+  border-radius: 0 3px 3px 0;
+}
+
+/* Handing the reviewer a working account beats making them read the seed file. */
+.gate__demo {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--stub-shade);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #6f6555;
+}
+
+.gate__demo strong {
+  color: var(--stub-ink);
+  font-weight: 600;
+}
+
+.gate__footer {
+  text-align: center;
+  padding-top: 24px;
+}
+
+/* --------------------------------------------------------------------------
+   Booking screen shell
+   -------------------------------------------------------------------------- */
+
+.hall {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--house-line);
+  background: rgb(11 9 16 / 80%);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.topbar__brand {
+  font-size: 17px;
+  color: var(--stub);
+  white-space: nowrap;
+}
+
+.topbar__brand span {
+  color: var(--beam);
+}
+
+.topbar__spacer {
+  flex: 1;
+}
+
+.topbar__user {
+  text-align: right;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.topbar__user-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 32px;
+  align-items: start;
+  padding: 28px 24px 48px;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* --------------------------------------------------------------------------
+   Screening picker
+   -------------------------------------------------------------------------- */
+
+.showings {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 26px;
+  scrollbar-width: thin;
+}
+
+.showing {
+  flex: 0 0 auto;
+  text-align: left;
+  padding: 10px 14px;
+  border: 1px solid var(--house-line);
+  border-radius: var(--radius);
+  background: var(--house);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.showing:hover {
+  border-color: #453d5c;
+}
+
+.showing[aria-pressed='true'] {
+  border-color: var(--beam);
+  background: linear-gradient(180deg, rgb(240 180 41 / 12%), transparent);
+}
+
+.showing__time {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--stub);
+}
+
+.showing[aria-pressed='true'] .showing__time {
+  color: var(--beam);
+}
+
+.showing__title {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   THE SIGNATURE: the screen and the light it throws down the auditorium
+   -------------------------------------------------------------------------- */
+
+.auditorium {
+  position: relative;
+  padding-top: 8px;
+}
+
+.screen {
+  position: relative;
+  margin: 0 auto 6px;
+  width: min(72%, 640px);
+}
+
+.screen__panel {
+  height: 10px;
+  border-radius: 50% 50% 3px 3px / 100% 100% 3px 3px;
+  background: linear-gradient(180deg, var(--stub) 0%, #b9ac8f 100%);
+  box-shadow: 0 0 26px 2px rgb(240 180 41 / 35%);
+}
+
+/* The beam: a soft cone widening away from the screen, so rows nearest the
+   screen sit in more light. Purely decorative, hidden from assistive tech. */
+.screen__beam {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  translate: -50% 0;
+  width: 190%;
+  height: 340px;
+  background: radial-gradient(
+    58% 100% at 50% 0%,
+    rgb(240 180 41 / 20%) 0%,
+    rgb(240 180 41 / 8%) 34%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.screen__label {
+  text-align: center;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  text-transform: uppercase;
+  color: #857a5f;
+}
+
+/* --------------------------------------------------------------------------
+   Seat grid
+   -------------------------------------------------------------------------- */
+
+.seatmap {
+  position: relative;
+  z-index: 1;
+  margin-top: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: center;
+}
+
+.seatrow {
+  display: grid;
+  grid-template-columns: 22px repeat(var(--cols), var(--seat)) 22px;
+  gap: var(--gap);
+  align-items: center;
+  --seat: 30px;
+  --gap: 7px;
+}
+
+/* The 5-seat rows sit at the back; centring them keeps the aisle believable. */
+.seatrow--narrow {
+  grid-template-columns: 22px repeat(var(--cols), var(--seat)) 22px;
+}
+
+.seatrow__label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+  user-select: none;
+}
+
+.seat {
+  position: relative;
+  width: var(--seat);
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px 7px 3px 3px;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+  color: transparent;
+  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease,
+    box-shadow 130ms ease;
+}
+
+/* The armrest / base of the chair, which is what makes it read as a seat. */
+.seat::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: -3px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.seat--available {
+  border-color: var(--available);
+  color: var(--available);
+  background: rgb(139 131 166 / 22%);
+}
+
+.seat--available:hover {
+  border-color: var(--beam);
+  color: var(--beam);
+  background: rgb(240 180 41 / 16%);
+  transform: translateY(-2px);
+}
+
+.seat--selected {
+  background: var(--beam);
+  border-color: var(--beam);
+  color: var(--stub-ink);
+  box-shadow: 0 0 0 3px rgb(240 180 41 / 22%);
+  transform: translateY(-2px);
+}
+
+.seat--reserved {
+  background: var(--slate);
+  border-color: var(--slate);
+  color: #b6b0c9;
+  cursor: not-allowed;
+}
+
+.seat--booked {
+  background: var(--velvet);
+  border-color: var(--velvet);
+  color: #f0c9d3;
+  cursor: not-allowed;
+}
+
+/* Your own live hold: velvet/slate would hide it, so it keeps the beam colour
+   with a dashed edge to say "held, not yet paid for". */
+.seat--mine {
+  background: rgb(240 180 41 / 22%);
+  border: 1px dashed var(--beam);
+  color: var(--beam);
+  cursor: not-allowed;
+}
+
+.seat--mine-booked {
+  background: var(--velvet);
+  border: 1px solid var(--beam);
+  color: var(--beam-soft);
+  cursor: not-allowed;
+}
+
+/* Seat number appears on hover / selection only - 115 numbers at once is noise. */
+.seat__num {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.seat:hover .seat__num,
+.seat--selected .seat__num,
+.seat--mine .seat__num {
+  opacity: 1;
+}
+
+/* Rows fade in from the screen backwards on first paint. */
+@media (prefers-reduced-motion: no-preference) {
+  .seatmap--enter .seatrow {
+    animation: row-in 380ms cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+    animation-delay: calc(var(--row-index) * 28ms);
+  }
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Legend
+   -------------------------------------------------------------------------- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 20px;
+  margin-top: 34px;
+  padding-top: 20px;
+  border-top: 1px solid var(--house-line);
+}
+
+.legend__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.legend__swatch {
+  width: 16px;
+  height: 14px;
+  border-radius: 4px 4px 2px 2px;
+  border: 1px solid var(--available);
+  background: rgb(139 131 166 / 22%);
+}
+
+.legend__swatch--selected {
+  background: var(--beam);
+  border-color: var(--beam);
+}
+
+.legend__swatch--mine {
+  background: rgb(240 180 41 / 22%);
+  border: 1px dashed var(--beam);
+}
+
+.legend__swatch--reserved {
+  background: var(--slate);
+  border-color: var(--slate);
+}
+
+.legend__swatch--booked {
+  background: var(--velvet);
+  border-color: var(--velvet);
+}
+
+.tally {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* --------------------------------------------------------------------------
+   Ticket stub panel
+   -------------------------------------------------------------------------- */
+
+.rail {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ticket {
+  padding: 22px 24px 24px;
+}
+
+.ticket__film {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 6px 0 4px;
+}
+
+.ticket__meta {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: #6f6555;
+  line-height: 1.7;
+}
+
+/* The tear line: this is where the stub would come away from the ticket. */
+.ticket__tear {
+  position: relative;
+  margin: 20px -24px;
+  border-top: 2px dashed var(--stub-shade);
+}
+
+.ticket__tear::before,
+.ticket__tear::after {
+  content: '';
+  position: absolute;
+  top: -9px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--house-deep);
+}
+
+.ticket__tear::before {
+  left: -8px;
+}
+
+.ticket__tear::after {
+  right: -8px;
+}
+
+.ticket__seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+
+.seat-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: var(--stub-ink);
+  color: var(--beam);
+}
+
+.seat-chip--muted {
+  background: var(--stub-shade);
+  color: #5c5344;
+}
+
+.ticket__empty {
+  font-size: 13.5px;
+  color: #6f6555;
+  margin: 8px 0 0;
+}
+
+.ticket__notice {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  border-radius: 3px;
+  border-left: 3px solid var(--velvet);
+  background: #f6e3e3;
+  color: #7a2438;
+}
+
+.ticket__notice code {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: #5c1f2e;
+}
+
+.ticket__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ticket__actions .btn {
+  flex: 1;
+}
+
+.btn--paper {
+  background: var(--stub-ink);
+  border-color: var(--stub-ink);
+  color: var(--stub);
+}
+
+.btn--paper:hover:not(:disabled) {
+  background: #2e2740;
+  border-color: #2e2740;
+}
+
+.btn--paper-ghost {
+  background: transparent;
+  border-color: var(--stub-shade);
+  color: #5c5344;
+}
+
+.btn--paper-ghost:hover:not(:disabled) {
+  background: #e5dbc6;
+  border-color: #c9bda3;
+}
+
+/* --------------------------------------------------------------------------
+   Holds + countdown
+   -------------------------------------------------------------------------- */
+
+.holds {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hold {
+  padding: 16px 18px 18px;
+}
+
+.hold__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hold__title {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #6f6555;
+}
+
+.clock {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--stub-ink);
+}
+
+.clock--urgent {
+  color: #b5253f;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .clock--urgent {
+    animation: tick 1s steps(2, jump-none) infinite;
+  }
+}
+
+@keyframes tick {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.hold__bar {
+  height: 3px;
+  margin-top: 10px;
+  border-radius: 2px;
+  background: var(--stub-shade);
+  overflow: hidden;
+}
+
+.hold__bar-fill {
+  height: 100%;
+  background: var(--stub-ink);
+  transition: width 1s linear;
+}
+
+.hold__bar-fill--urgent {
+  background: #b5253f;
+}
+
+.hold--booked .clock {
+  font-size: 15px;
+  color: var(--ok);
+}
+
+.badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 2px;
+  background: #2f6b4d;
+  color: #d6f0e2;
+}
+
+/* --------------------------------------------------------------------------
+   Toasts
+   -------------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(380px, calc(100vw - 40px));
+}
+
+.toast {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--house-line);
+  border-left-width: 3px;
+  background: #1b1725;
+  box-shadow: var(--shadow-lift);
+  font-size: 13.5px;
+}
+
+.toast--error {
+  border-left-color: var(--danger);
+}
+
+.toast--success {
+  border-left-color: var(--ok);
+}
+
+.toast--info {
+  border-left-color: var(--beam);
+}
+
+.toast__diagram {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: toast-in 200ms ease-out;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   States
+   -------------------------------------------------------------------------- */
+
+.center-note {
+  display: grid;
+  place-items: center;
+  min-height: 60vh;
+  gap: 10px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--house-line);
+  border-top-color: var(--beam);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1080px) {
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .rail {
+    position: static;
+  }
+}
+
+@media (max-width: 720px) {
+  .seatrow {
+    --seat: 26px;
+    --gap: 5px;
+    grid-template-columns: 18px repeat(var(--cols), var(--seat)) 18px;
+  }
+
+  .seat {
+    height: 23px;
+  }
+
+  .stage {
+    padding: 20px 14px 40px;
+  }
+
+  .topbar {
+    padding: 12px 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .seatrow {
+    --seat: 22px;
+    --gap: 4px;
+    grid-template-columns: 16px repeat(var(--cols), var(--seat)) 16px;
+  }
+
+  .seat {
+    height: 20px;
+    border-radius: 6px 6px 2px 2px;
+  }
+
+  .seat__num {
+    font-size: 9px;
+  }
+}

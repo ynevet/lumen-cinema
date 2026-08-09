@@ -1,0 +1,72 @@
+﻿name: lumen-cinema
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: cinema-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cinema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinema}
+      POSTGRES_DB: ${POSTGRES_DB:-cinema}
+      # Postgres logs in UTC; keep the app and the DB on the same clock.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Exposed so you can inspect the database with psql / DBeaver from the host.
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - cinema-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-cinema} -d ${POSTGRES_DB:-cinema}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: cinema-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-cinema}:${POSTGRES_PASSWORD:-cinema}@db:5432/${POSTGRES_DB:-cinema}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-please}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-720}
+      HOLD_MINUTES: ${HOLD_MINUTES:-15}
+      MAX_SEATS_PER_RESERVATION: ${MAX_SEATS_PER_RESERVATION:-10}
+      EXPIRY_SWEEP_MS: ${EXPIRY_SWEEP_MS:-15000}
+      RUN_MIGRATIONS: 'true'
+      RUN_SEED: 'true'
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      TZ: UTC
+    ports:
+      - '${API_PORT:-4000}:4000'
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: cinema-web
+    restart: unless-stopped
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  cinema-db-data:
