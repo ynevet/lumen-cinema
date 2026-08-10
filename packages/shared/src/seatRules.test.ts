@@ -5,7 +5,7 @@ import {
   renderRowDiagram,
   validateSeatSelection,
 } from './seatRules.js';
-import { DEFAULT_LAYOUT, MAX_ROW_WIDTH, TOTAL_SEATS } from './layout.js';
+import { DEFAULT_LAYOUT } from './layout.js';
 
 const ROW = 10;
 
@@ -23,8 +23,7 @@ describe('layout', () => {
     expect(DEFAULT_LAYOUT.filter((r) => r.seatCount === 10)).toHaveLength(10);
     expect(DEFAULT_LAYOUT.filter((r) => r.seatCount === 5)).toHaveLength(3);
     expect(DEFAULT_LAYOUT.map((r) => r.label).join('')).toBe('ABCDEFGHIJKLM');
-    expect(TOTAL_SEATS).toBe(115);
-    expect(MAX_ROW_WIDTH).toBe(10);
+    expect(DEFAULT_LAYOUT.reduce((sum, r) => sum + r.seatCount, 0)).toBe(115);
   });
 
   it('numbers rows from 1 with no gaps', () => {

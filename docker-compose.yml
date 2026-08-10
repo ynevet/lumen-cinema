@@ -65,8 +65,10 @@ services:
     ports:
       - '${WEB_PORT:-8080}:80'
     depends_on:
+      # Wait for the API to answer its health check, so the first page load cannot
+      # land on a 502 from nginx.
       api:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   cinema-db-data:

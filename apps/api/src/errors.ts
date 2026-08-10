@@ -16,16 +16,8 @@ export class AppError extends Error {
     this.details = details;
   }
 
-  static badRequest(code: string, message: string, details?: unknown): AppError {
-    return new AppError(400, code, message, details);
-  }
-
   static unauthorized(message = 'Authentication required.', code = 'UNAUTHENTICATED'): AppError {
     return new AppError(401, code, message);
-  }
-
-  static forbidden(message = 'You do not have access to this resource.'): AppError {
-    return new AppError(403, 'FORBIDDEN', message);
   }
 
   static notFound(code: string, message: string): AppError {
@@ -44,8 +36,6 @@ export class AppError extends Error {
 
 /** Postgres unique-violation. Our signal that another transaction won the race. */
 export const PG_UNIQUE_VIOLATION = '23505';
-export const PG_SERIALIZATION_FAILURE = '40001';
-export const PG_DEADLOCK_DETECTED = '40P01';
 
 export function isPgError(error: unknown, code: string): boolean {
   return (

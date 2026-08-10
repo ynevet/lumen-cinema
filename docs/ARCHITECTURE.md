@@ -6,11 +6,23 @@
 lumen-cinema/
 ├── packages/shared/        @lumen/shared - types + seat-selection rules
 ├── apps/api/               @lumen/api    - Express 5 + TypeScript + node-postgres
+│   ├── src/routes/         HTTP shape: parse, authorise, delegate
+│   ├── src/services/       the domain work
 │   └── db/migrations/      versioned SQL, applied at startup
 ├── apps/web/               @lumen/web    - React 19 + Vite
+│   ├── src/hooks/          useSeatMap (polling), useSeatSelection (rules)
+│   └── src/components/     rendering
 ├── docs/                   ERD, this document
 └── docker-compose.yml      db + api + web
 ```
+
+Three layers on the server (route → service → SQL) and no more. There is no repository or
+DAO layer: it would only forward calls, and the queries here are the interesting part of the
+design rather than an implementation detail worth hiding.
+
+On the client, the two mechanisms that carry state — polling the seat map, and the selection
+state machine — live in hooks so each is small enough to reason about, leaving the component
+to render.
 
 npm workspaces, one lockfile, one TypeScript project graph. `@lumen/shared` is a real
 package rather than a folder of copied files, which is what allows the seat rules to be
@@ -94,6 +106,21 @@ So the implementation compares the row before and after: a trap the selection **
 rejected; a pre-existing trap that the selection does not touch is not held against the user.
 Every worked example in the specification behaves exactly as specified, and the tests assert all
 three of them plus the pre-existing-gap case.
+
+## Writes carry their own preconditions
+
+`confirmHold` and `cancelHold` are single `UPDATE ... WHERE ... RETURNING` statements. Every
+precondition — the reservation is yours, it is still `held`, it has not expired — lives in the
+`WHERE` clause, so the statement is atomic on its own: no explicit transaction, no
+`SELECT ... FOR UPDATE`, and no window between checking and writing.
+
+When the update matches nothing, we read the row once, purely to produce a useful error
+(`404` if it is not yours, `409 HOLD_EXPIRED` if it lapsed). That read is on the failure path
+only, so the ordinary case is one round trip. Confirming or releasing twice is a no-op rather
+than an error, which makes both endpoints safe to retry.
+
+`createHold` is the exception and does need a transaction: it validates a whole cinema row
+and then writes, and those two steps must be seen as one.
 
 ## Error contract
 

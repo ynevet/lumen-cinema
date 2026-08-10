@@ -34,12 +34,15 @@ const MOVIES = [
   },
 ];
 
-/** Hours after midnight (server time) at which each screening starts. */
+/**
+ * Showtimes, as minutes from the top of the next hour. Relative rather than absolute so
+ * a demo started at any time of day always has something upcoming to book.
+ */
 const SCREENING_SLOTS = [
-  { movieIndex: 0, hoursFromMidnight: 18 },
-  { movieIndex: 0, hoursFromMidnight: 21.5 },
-  { movieIndex: 1, hoursFromMidnight: 17 },
-  { movieIndex: 2, hoursFromMidnight: 20 },
+  { movieIndex: 0, minutesFromNextHour: 0 },
+  { movieIndex: 1, minutesFromNextHour: 90 },
+  { movieIndex: 2, minutesFromNextHour: 210 },
+  { movieIndex: 0, minutesFromNextHour: 330 },
 ];
 
 async function seedAuditoriumAndSeats(tx: DbClient): Promise<number> {
@@ -90,20 +93,38 @@ async function seedMovies(tx: DbClient): Promise<number[]> {
   return ids;
 }
 
+/**
+ * Schedules today's programme only when the hall has nothing showing in the next 24 hours.
+ * Re-seeding is therefore a no-op on every restart, while a demo started at any time of day
+ * - or left running past its last showing - always has bookable screenings.
+ *
+ * The window is deliberately 24 hours rather than "any future screening": the integration
+ * tests create their own screening far in the future, and that must not suppress the seed.
+ */
 async function seedScreenings(
   tx: DbClient,
   auditoriumId: number,
   movieIds: number[],
 ): Promise<void> {
+  const { rows } = await tx.query<{ upcoming: number }>(
+    `SELECT count(*)::int AS upcoming
+       FROM screenings
+      WHERE auditorium_id = $1
+        AND starts_at > now()
+        AND starts_at < now() + interval '1 day'`,
+    [auditoriumId],
+  );
+  if ((rows[0]?.upcoming ?? 0) > 0) return;
+
   for (const slot of SCREENING_SLOTS) {
     const movieId = movieIds[slot.movieIndex];
     if (movieId === undefined) continue;
-    // Anchored to today's midnight so re-seeding the same day is a no-op.
     await tx.query(
       `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
-       VALUES ($1, $2, date_trunc('day', now()) + make_interval(mins => $3::int))
+       VALUES ($1, $2, date_trunc('hour', now()) + interval '1 hour'
+                        + make_interval(mins => $3::int))
        ON CONFLICT (auditorium_id, starts_at) DO NOTHING`,
-      [movieId, auditoriumId, Math.round(slot.hoursFromMidnight * 60)],
+      [movieId, auditoriumId, slot.minutesFromNextHour],
     );
   }
 }

@@ -28,7 +28,9 @@ docker compose up --build
 Then open **<http://localhost:8080>**.
 
 The database schema is migrated and seeded automatically on first boot — no extra step. The
-API is also published on <http://localhost:4000> if you want to poke at it directly.
+seed schedules four showtimes starting from the next full hour, so there is always something
+bookable whenever you run it. The API is also published on <http://localhost:4000> if you
+want to poke at it directly.
 
 ```bash
 docker compose down     # stop, keep the data
@@ -147,10 +149,10 @@ All routes are under `/api`. Everything except `/auth/*`, `/health` and `/config
 | `GET` | `/auth/me` | Verify a stored token |
 | `GET` | `/config` | Hold duration and seat cap, so the UI does not hard-code them |
 | `GET` | `/health` | Liveness plus database reachability |
-| `GET` | `/screenings` | Showtimes |
+| `GET` | `/screenings` | Upcoming showtimes |
 | `GET` | `/screenings/:id/seatmap` | The seating map with every seat's status |
 | `POST` | `/screenings/:id/reservations` | Hold seats — `{ seatIds: number[] }` |
-| `GET` | `/screenings/:id/reservations` | Your reservations for this screening |
+| `GET` | `/screenings/:id/reservations` | Your reservations here; `?active=true` for live ones |
 | `POST` | `/reservations/:id/confirm` | Complete the reservation: held → booked |
 | `DELETE` | `/reservations/:id` | Release a hold early |
 

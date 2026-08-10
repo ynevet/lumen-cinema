@@ -16,6 +16,7 @@ export const reservationRoutes = Router();
 
 reservationRoutes.use(requireAuth);
 
+// `?active=true` narrows to live holds and bookings; the default is the full history.
 reservationRoutes.get('/', async (req, res) => {
   const user = currentUser(req);
   const activeOnly = req.query.active === 'true';

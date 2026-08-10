@@ -37,8 +37,15 @@ function toScreening(row: ScreeningRow): Screening {
   };
 }
 
+/**
+ * Screenings you can still buy a ticket for. Past showings stay in the database - they
+ * are the context for the reservations that point at them - but nobody should be offered
+ * a seat at a film that already started.
+ */
 export async function listScreenings(): Promise<Screening[]> {
-  const { rows } = await pool.query<ScreeningRow>(`${SCREENING_SELECT} ORDER BY sc.starts_at`);
+  const { rows } = await pool.query<ScreeningRow>(
+    `${SCREENING_SELECT} WHERE sc.starts_at > now() ORDER BY sc.starts_at`,
+  );
   return rows.map(toScreening);
 }
 
@@ -64,7 +71,6 @@ interface SeatRow {
   hold_status: 'held' | 'booked' | null;
   held_by: number | null;
   expires_at: Date | null;
-  reservation_id: string | null;
 }
 
 /**
@@ -86,13 +92,12 @@ export async function loadSeatRows(
             s.row_label,
             s.row_index,
             s.seat_number,
-            occ.status         AS hold_status,
-            occ.user_id        AS held_by,
-            occ.expires_at     AS expires_at,
-            occ.reservation_id AS reservation_id
+            occ.status     AS hold_status,
+            occ.user_id    AS held_by,
+            occ.expires_at AS expires_at
        FROM seats s
        LEFT JOIN LATERAL (
-            SELECT r.id AS reservation_id, r.user_id, r.status, r.expires_at
+            SELECT r.user_id, r.status, r.expires_at
               FROM reservation_seats rs
               JOIN reservations r ON r.id = rs.reservation_id
              WHERE rs.seat_id = s.id
@@ -135,7 +140,6 @@ export async function getSeatMap(screeningId: number, viewerId: number): Promise
       mine,
       // Only the owner learns when someone's hold runs out.
       holdExpiresAt: mine && row.expires_at ? row.expires_at.toISOString() : null,
-      reservationId: mine ? row.reservation_id : null,
     };
 
     let mapRow = rowsByLabel.get(row.row_label);

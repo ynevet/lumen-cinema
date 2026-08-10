@@ -41,8 +41,3 @@ export const DEFAULT_LAYOUT: ReadonlyArray<RowBlueprint> = Object.freeze(
     { rows: 3, seats: 5 },
   ]),
 );
-
-export const TOTAL_SEATS = DEFAULT_LAYOUT.reduce((sum, row) => sum + row.seatCount, 0);
-
-/** Widest row in the layout - used by the client to centre narrower rows. */
-export const MAX_ROW_WIDTH = DEFAULT_LAYOUT.reduce((max, row) => Math.max(max, row.seatCount), 0);

@@ -5,8 +5,6 @@ interface Props {
   /** Seat ids in the pending (not yet submitted) selection. */
   selected: ReadonlySet<number>;
   onToggleSeat: (seat: SeatView) => void;
-  /** True only on the first render of a screening, to run the entry animation once. */
-  animate: boolean;
 }
 
 function seatClass(seat: SeatView, isSelected: boolean): string {
@@ -25,7 +23,7 @@ function seatLabel(seat: SeatView, isSelected: boolean): string {
   return `${id}, ${seat.status}`;
 }
 
-export function SeatMapView({ seatMap, selected, onToggleSeat, animate }: Props) {
+export function SeatMapView({ seatMap, selected, onToggleSeat }: Props) {
   return (
     <div className="auditorium">
       <div className="screen">
@@ -34,7 +32,7 @@ export function SeatMapView({ seatMap, selected, onToggleSeat, animate }: Props)
         <p className="screen__label">Screen</p>
       </div>
 
-      <div className={`seatmap${animate ? ' seatmap--enter' : ''}`}>
+      <div className="seatmap seatmap--enter">
         {seatMap.rows.map((row) => (
           <div
             key={row.label}

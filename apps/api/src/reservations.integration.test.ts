@@ -296,6 +296,5 @@ describe('hold lifecycle', () => {
     expect(otherSeat.status).toBe('reserved');
     expect(otherSeat.mine).toBe(false);
     expect(otherSeat.holdExpiresAt).toBeNull();
-    expect(otherSeat.reservationId).toBeNull();
   });
 });

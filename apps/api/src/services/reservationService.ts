@@ -56,12 +56,14 @@ function toReservation(row: ReservationRow, seats: ReservationSeatSummary[]): Re
   };
 }
 
-async function hydrate(rows: ReservationRow[], client: Queryable = pool): Promise<Reservation[]> {
-  const summaries = await loadSeatSummaries(
-    rows.map((row) => row.id),
-    client,
-  );
+async function hydrate(rows: ReservationRow[]): Promise<Reservation[]> {
+  const summaries = await loadSeatSummaries(rows.map((row) => row.id));
   return rows.map((row) => toReservation(row, summaries.get(row.id) ?? []));
+}
+
+async function hydrateOne(row: ReservationRow): Promise<Reservation> {
+  const seats = await loadSeatSummaries([row.id]);
+  return toReservation(row, seats.get(row.id) ?? []);
 }
 
 /**
@@ -238,98 +240,76 @@ export async function createHold(input: CreateHoldInput): Promise<Reservation> {
   }
 }
 
-/** Turn a live hold into a booking. Idempotent for an already-confirmed reservation. */
+/**
+ * Turn a live hold into a booking.
+ *
+ * The UPDATE carries every precondition in its WHERE clause, so it is atomic on its own -
+ * no transaction and no SELECT ... FOR UPDATE needed. If it matches nothing we read the row
+ * once, purely to tell the user *why*. Confirming twice is a no-op rather than an error.
+ */
 export async function confirmHold(reservationId: string, userId: number): Promise<Reservation> {
-  return withTransaction(async (tx) => {
-    const existing = await loadOwnedReservation(tx, reservationId, userId);
+  const { rows } = await pool.query<ReservationRow>(
+    `UPDATE reservations
+        SET status = 'booked', confirmed_at = now()
+      WHERE id = $1 AND user_id = $2 AND status = 'held' AND expires_at > now()
+      RETURNING id, screening_id, status, created_at, expires_at, confirmed_at`,
+    [reservationId, userId],
+  );
 
-    if (existing.status === 'booked') {
-      const seats = await loadSeatSummaries([existing.id], tx);
-      return toReservation(existing, seats.get(existing.id) ?? []);
-    }
-    if (existing.status !== 'held') {
-      throw AppError.conflict(
-        'RESERVATION_NOT_HELD',
-        `This reservation was ${existing.status} and can no longer be confirmed.`,
-      );
-    }
-    if (existing.expires_at.getTime() <= Date.now()) {
-      throw AppError.conflict(
-        'HOLD_EXPIRED',
-        'Your 15 minute hold expired and the seats were released.',
-      );
-    }
+  const confirmed = rows[0];
+  if (confirmed) return hydrateOne(confirmed);
 
-    const { rows } = await tx.query<ReservationRow>(
-      `UPDATE reservations
-          SET status = 'booked', confirmed_at = now()
-        WHERE id = $1 AND user_id = $2 AND status = 'held' AND expires_at > now()
-        RETURNING id, screening_id, status, created_at, expires_at, confirmed_at`,
-      [reservationId, userId],
-    );
-
-    const confirmed = rows[0];
-    if (!confirmed) {
-      // Lost to the sweeper between the read and the write.
-      throw AppError.conflict(
-        'HOLD_EXPIRED',
-        'Your 15 minute hold expired and the seats were released.',
-      );
-    }
-
-    const seats = await loadSeatSummaries([confirmed.id], tx);
-    return toReservation(confirmed, seats.get(confirmed.id) ?? []);
-  });
+  const current = await loadOwnReservation(reservationId, userId);
+  if (current.status === 'booked') return hydrateOne(current);
+  if (current.status === 'held') {
+    // Still 'held' but the UPDATE missed, so expiry is the only thing that blocked it.
+    throw AppError.conflict('HOLD_EXPIRED', 'Your hold expired and the seats were released.');
+  }
+  throw AppError.conflict(
+    'RESERVATION_NOT_HELD',
+    `This reservation was ${current.status} and can no longer be confirmed.`,
+  );
 }
 
-/** Give the seats back before the hold runs out. */
+/** Give the seats back before the hold runs out. Releasing twice is a no-op. */
 export async function cancelHold(reservationId: string, userId: number): Promise<Reservation> {
-  return withTransaction(async (tx) => {
-    const existing = await loadOwnedReservation(tx, reservationId, userId);
+  const { rows } = await pool.query<ReservationRow>(
+    `UPDATE reservations
+        SET status = 'cancelled', released_at = now()
+      WHERE id = $1 AND user_id = $2 AND status = 'held'
+      RETURNING id, screening_id, status, created_at, expires_at, confirmed_at`,
+    [reservationId, userId],
+  );
 
-    if (existing.status === 'booked') {
-      throw AppError.conflict(
-        'ALREADY_BOOKED',
-        'This reservation is already booked and cannot be released here.',
-      );
-    }
-    if (existing.status !== 'held') {
-      const seats = await loadSeatSummaries([existing.id], tx);
-      return toReservation(existing, seats.get(existing.id) ?? []);
-    }
+  const cancelled = rows[0];
+  if (cancelled) return hydrateOne(cancelled);
 
-    const { rows } = await tx.query<ReservationRow>(
-      `UPDATE reservations
-          SET status = 'cancelled', released_at = now()
-        WHERE id = $1 AND user_id = $2 AND status = 'held'
-        RETURNING id, screening_id, status, created_at, expires_at, confirmed_at`,
-      [reservationId, userId],
+  const current = await loadOwnReservation(reservationId, userId);
+  if (current.status === 'booked') {
+    throw AppError.conflict(
+      'ALREADY_BOOKED',
+      'This reservation is already booked and cannot be released here.',
     );
-
-    const cancelled = rows[0] ?? existing;
-    const seats = await loadSeatSummaries([cancelled.id], tx);
-    return toReservation(cancelled, seats.get(cancelled.id) ?? []);
-  });
+  }
+  // Already expired or cancelled - the seats are free either way.
+  return hydrateOne(current);
 }
 
-async function loadOwnedReservation(
-  client: DbClient,
+/**
+ * Load a reservation that belongs to this user. A reservation owned by somebody else is
+ * reported as absent rather than forbidden, so ids cannot be probed for existence.
+ */
+async function loadOwnReservation(
   reservationId: string,
   userId: number,
-): Promise<ReservationRow & { user_id: number }> {
-  const { rows } = await client.query<ReservationRow & { user_id: number }>(
+): Promise<ReservationRow> {
+  const { rows } = await pool.query<ReservationRow & { user_id: number }>(
     `SELECT id, user_id, screening_id, status, created_at, expires_at, confirmed_at
-       FROM reservations
-      WHERE id = $1
-      FOR UPDATE`,
+       FROM reservations WHERE id = $1`,
     [reservationId],
   );
   const reservation = rows[0];
-  if (!reservation) {
-    throw AppError.notFound('RESERVATION_NOT_FOUND', 'That reservation does not exist.');
-  }
-  if (reservation.user_id !== userId) {
-    // Deliberately a 404: do not confirm the existence of other people's reservations.
+  if (!reservation || reservation.user_id !== userId) {
     throw AppError.notFound('RESERVATION_NOT_FOUND', 'That reservation does not exist.');
   }
   return reservation;
@@ -357,15 +337,5 @@ export async function getMyReservation(
   reservationId: string,
   userId: number,
 ): Promise<Reservation> {
-  const { rows } = await pool.query<ReservationRow & { user_id: number }>(
-    `SELECT id, user_id, screening_id, status, created_at, expires_at, confirmed_at
-       FROM reservations WHERE id = $1`,
-    [reservationId],
-  );
-  const row = rows[0];
-  if (!row || row.user_id !== userId) {
-    throw AppError.notFound('RESERVATION_NOT_FOUND', 'That reservation does not exist.');
-  }
-  const seats = await loadSeatSummaries([row.id]);
-  return toReservation(row, seats.get(row.id) ?? []);
+  return hydrateOne(await loadOwnReservation(reservationId, userId));
 }

@@ -30,10 +30,11 @@ screeningRoutes.get('/:screeningId/seatmap', async (req, res) => {
   res.json(await getSeatMap(screeningId, user.id));
 });
 
+// `?active=true` narrows to live holds and bookings; the default is the full history.
 screeningRoutes.get('/:screeningId/reservations', async (req, res) => {
   const { screeningId } = screeningIdParam.parse(req.params);
   const user = currentUser(req);
-  const activeOnly = req.query.active !== 'false';
+  const activeOnly = req.query.active === 'true';
   res.json({ reservations: await listMyReservations(user.id, { screeningId, activeOnly }) });
 });
 

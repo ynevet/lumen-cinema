@@ -1,19 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Reservation, Screening, SeatMap, SeatMapRow, SeatView } from '@lumen/shared';
-import { validateSeatSelection } from '@lumen/shared';
+import { useCallback, useEffect, useState } from 'react';
+import type { Screening } from '@lumen/shared';
 import { ApiError, api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { useSeatMap } from '../hooks/useSeatMap';
+import { useSeatSelection } from '../hooks/useSeatSelection';
 import { useToast } from './Toasts';
 import { SeatMapView } from './SeatMapView';
 import { HoldCard } from './HoldCard';
-
-/** How often we re-read the map so other people's seats appear without a refresh. */
-const POLL_MS = 4000;
 
 interface Settings {
   holdMinutes: number;
   maxSeatsPerReservation: number;
 }
+
+const FALLBACK_SETTINGS: Settings = { holdMinutes: 15, maxSeatsPerReservation: 10 };
 
 function formatShowtime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -27,19 +27,14 @@ export function BookingPage() {
   const { user, signOut } = useAuth();
   const toast = useToast();
 
-  const [settings, setSettings] = useState<Settings>({ holdMinutes: 15, maxSeatsPerReservation: 10 });
+  const [settings, setSettings] = useState<Settings>(FALLBACK_SETTINGS);
   const [screenings, setScreenings] = useState<Screening[]>([]);
   const [screeningId, setScreeningId] = useState<number | null>(null);
-  const [seatMap, setSeatMap] = useState<SeatMap | null>(null);
-  const [reservations, setReservations] = useState<Reservation[]>([]);
-  const [selected, setSelected] = useState<number[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // Animate the grid only when the screening changes, not on every 4s poll.
-  const animateKey = useRef<number | null>(null);
-  const justSwitched = animateKey.current !== screeningId;
+  const { seatMap, reservations, loading, error, refresh } = useSeatMap(screeningId);
+  const selection = useSeatSelection(seatMap, screeningId, settings.maxSeatsPerReservation);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,8 +46,8 @@ export function BookingPage() {
         setScreeningId((current) => current ?? list[0]?.id ?? null);
         if (list.length === 0) setFatal('No screenings are scheduled.');
       })
-      .catch((error: unknown) => {
-        if (!cancelled && error instanceof ApiError && error.status !== 401) {
+      .catch((caught: unknown) => {
+        if (!cancelled && caught instanceof ApiError && caught.status !== 401) {
           setFatal('Cannot reach the box office.');
         }
       });
@@ -61,224 +56,64 @@ export function BookingPage() {
     };
   }, []);
 
-  const refresh = useCallback(
-    async (id: number) => {
-      const [map, mine] = await Promise.all([api.seatMap(id), api.myReservations(id)]);
-      setSeatMap(map);
-      setReservations(mine.reservations);
-      return map;
-    },
-    [],
-  );
-
-  // Poll while the tab is visible; a background tab does not need live seats.
-  useEffect(() => {
-    if (screeningId === null) return;
-    let cancelled = false;
-
-    // `force` is set for the initial load and for the visibility handler, so a tab
-    // that starts in the background still fills in rather than spinning forever.
-    const tick = async (force = false) => {
-      if (document.hidden && !force) return;
+  /** Every action follows the same shape: run it, re-read, say what happened. */
+  const run = useCallback(
+    async (action: () => Promise<string>) => {
+      setBusy(true);
       try {
-        const map = await refresh(screeningId);
-        if (cancelled) return;
-        // Drop any pending selection that somebody else has taken in the meantime.
-        setSelected((current) => {
-          if (current.length === 0) return current;
-          const stillFree = new Set(
-            map.rows.flatMap((row) =>
-              row.seats.filter((seat) => seat.status === 'available').map((seat) => seat.id),
-            ),
-          );
-          const kept = current.filter((id) => stillFree.has(id));
-          return kept.length === current.length ? current : kept;
-        });
-      } catch (error) {
-        if (!cancelled && error instanceof ApiError && error.status !== 401) {
-          setFatal('Lost contact with the box office.');
+        const message = await action();
+        await refresh();
+        toast.push({ tone: 'success', message });
+      } catch (caught) {
+        if (caught instanceof ApiError) {
+          const details = caught.details as { diagram?: string } | undefined;
+          toast.push({ tone: 'error', message: caught.message, diagram: details?.diagram });
+          // The world moved underneath us - show what it looks like now.
+          if (caught.status === 409) await refresh().catch(() => undefined);
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        setBusy(false);
       }
-    };
-
-    setLoading(true);
-    setSelected([]);
-    void tick(true);
-    animateKey.current = screeningId;
-
-    // Coming back to the tab should show current seats immediately, not in 4s.
-    const onVisible = () => {
-      if (!document.hidden) void tick(true);
-    };
-    document.addEventListener('visibilitychange', onVisible);
-
-    const timer = setInterval(() => void tick(), POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [screeningId, refresh]);
-
-  const seatsById = useMemo(() => {
-    const index = new Map<number, { seat: SeatView; row: SeatMapRow }>();
-    for (const row of seatMap?.rows ?? []) {
-      for (const seat of row.seats) index.set(seat.id, { seat, row });
-    }
-    return index;
-  }, [seatMap]);
-
-  const selectedRow = useMemo(() => {
-    const first = selected[0];
-    return first === undefined ? null : (seatsById.get(first)?.row ?? null);
-  }, [selected, seatsById]);
-
-  /**
-   * Keep the pending selection legal by construction: one row, always contiguous.
-   * Clicking somewhere that cannot extend the current run simply starts a new one,
-   * which is less irritating than an error message for something we can just fix.
-   */
-  const toggleSeat = useCallback(
-    (seat: SeatView) => {
-      setSelected((current) => {
-        if (current.includes(seat.id)) {
-          const numbers = current
-            .map((id) => seatsById.get(id)?.seat.seatNumber ?? 0)
-            .sort((a, b) => a - b);
-          const isEndpoint =
-            seat.seatNumber === numbers[0] || seat.seatNumber === numbers[numbers.length - 1];
-          if (isEndpoint) return current.filter((id) => id !== seat.id);
-          // Removing from the middle would split the run - restart from here instead.
-          return [seat.id];
-        }
-
-        if (current.length === 0) return [seat.id];
-
-        const currentRow = seatsById.get(current[0]!)?.row;
-        if (!currentRow || currentRow.label !== seat.rowLabel) return [seat.id];
-        if (current.length >= settings.maxSeatsPerReservation) return [seat.id];
-
-        const numbers = current
-          .map((id) => seatsById.get(id)?.seat.seatNumber ?? 0)
-          .sort((a, b) => a - b);
-        const low = numbers[0]!;
-        const high = numbers[numbers.length - 1]!;
-        const extends_ = seat.seatNumber === low - 1 || seat.seatNumber === high + 1;
-        return extends_ ? [...current, seat.id] : [seat.id];
-      });
     },
-    [seatsById, settings.maxSeatsPerReservation],
+    [refresh, toast],
   );
 
-  /**
-   * The same rule module the API runs, applied to the pending selection. The server
-   * still has the final word - this only saves the user a rejected round-trip.
-   */
-  const preflight = useMemo(() => {
-    if (selected.length === 0 || !selectedRow) return null;
-    const occupied = selectedRow.seats
-      .filter((seat) => seat.status !== 'available')
-      .map((seat) => seat.seatNumber);
-    const chosen = selected
-      .map((id) => seatsById.get(id)?.seat.seatNumber ?? 0)
-      .sort((a, b) => a - b);
+  const seatList = (seats: { rowLabel: string; seatNumber: number }[]): string =>
+    seats.map((seat) => `${seat.rowLabel}${seat.seatNumber}`).join(', ');
 
-    return validateSeatSelection({
-      rowLength: selectedRow.seatCount,
-      occupied,
-      selected: chosen,
-      maxSeatsPerReservation: settings.maxSeatsPerReservation,
+  const handleHold = () =>
+    run(async () => {
+      const { reservation } = await api.hold(screeningId!, selection.selected);
+      selection.clear();
+      return `Holding ${seatList(reservation.seats)} for ${settings.holdMinutes} minutes.`;
     });
-  }, [selected, selectedRow, seatsById, settings.maxSeatsPerReservation]);
 
-  const selectionLabels = useMemo(
-    () =>
-      selected
-        .map((id) => seatsById.get(id)?.seat)
-        .filter((seat): seat is SeatView => Boolean(seat))
-        .sort((a, b) => a.seatNumber - b.seatNumber)
-        .map((seat) => `${seat.rowLabel}${seat.seatNumber}`),
-    [selected, seatsById],
-  );
-
-  async function handleHold() {
-    if (screeningId === null || selected.length === 0) return;
-    setBusy(true);
-    try {
-      const { reservation } = await api.hold(screeningId, selected);
-      setSelected([]);
-      await refresh(screeningId);
-      toast.push({
-        tone: 'success',
-        message: `Holding ${reservation.seats
-          .map((seat) => `${seat.rowLabel}${seat.seatNumber}`)
-          .join(', ')} for ${settings.holdMinutes} minutes.`,
-      });
-    } catch (error) {
-      if (error instanceof ApiError) {
-        const details = error.details as { diagram?: string } | undefined;
-        toast.push({ tone: 'error', message: error.message, diagram: details?.diagram });
-        if (error.status === 409) {
-          setSelected([]);
-          await refresh(screeningId).catch(() => undefined);
-        }
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleConfirm(reservationId: string) {
-    if (screeningId === null) return;
-    setBusy(true);
-    try {
+  const handleConfirm = (reservationId: string) =>
+    run(async () => {
       const { reservation } = await api.confirm(reservationId);
-      await refresh(screeningId);
-      toast.push({
-        tone: 'success',
-        message: `Booked ${reservation.seats
-          .map((seat) => `${seat.rowLabel}${seat.seatNumber}`)
-          .join(', ')}. Enjoy the film.`,
-      });
-    } catch (error) {
-      if (error instanceof ApiError) {
-        toast.push({ tone: 'error', message: error.message });
-        await refresh(screeningId).catch(() => undefined);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
+      return `Booked ${seatList(reservation.seats)}. Enjoy the film.`;
+    });
 
-  async function handleRelease(reservationId: string) {
-    if (screeningId === null) return;
-    setBusy(true);
-    try {
+  const handleRelease = (reservationId: string) =>
+    run(async () => {
       await api.release(reservationId);
-      await refresh(screeningId);
-      toast.push({ tone: 'info', message: 'Seats released.' });
-    } catch (error) {
-      if (error instanceof ApiError) toast.push({ tone: 'error', message: error.message });
-    } finally {
-      setBusy(false);
-    }
-  }
+      return 'Seats released.';
+    });
 
-  const handleExpire = useCallback(
-    (reservationId: string) => {
-      setReservations((current) => current.filter((item) => item.id !== reservationId));
-      toast.push({ tone: 'info', message: 'A hold ran out and those seats went back on sale.' });
-      if (screeningId !== null) void refresh(screeningId).catch(() => undefined);
-    },
-    [screeningId, refresh, toast],
-  );
+  const handleExpire = useCallback(() => {
+    toast.push({ tone: 'info', message: 'A hold ran out and those seats went back on sale.' });
+    void refresh().catch(() => undefined);
+  }, [refresh, toast]);
 
   const screening = seatMap?.screening;
+  const now = Date.now();
   const liveHolds = reservations.filter(
-    (item) => item.status === 'booked' || (item.status === 'held' && new Date(item.expiresAt) > new Date()),
+    (item) =>
+      item.status === 'booked' ||
+      (item.status === 'held' && new Date(item.expiresAt).getTime() > now),
   );
+
+  const blockedByRule = selection.preflight !== null && !selection.preflight.ok;
 
   return (
     <div className="hall">
@@ -304,7 +139,7 @@ export function BookingPage() {
         <main className="stage">
           <section>
             <p className="eyebrow" style={{ marginBottom: 10 }}>
-              Tonight at Hall 1
+              Next at Hall 1
             </p>
             <div className="showings" role="group" aria-label="Choose a screening">
               {screenings.map((item) => (
@@ -327,12 +162,19 @@ export function BookingPage() {
                 <p>Reading the seat plan…</p>
               </div>
             ) : seatMap ? (
+              // Remounting per screening replays the entry animation exactly once.
               <SeatMapView
+                key={screeningId}
                 seatMap={seatMap}
-                selected={new Set(selected)}
-                onToggleSeat={toggleSeat}
-                animate={justSwitched}
+                selected={new Set(selection.selected)}
+                onToggleSeat={selection.toggle}
               />
+            ) : null}
+
+            {error ? (
+              <p className="tally" role="status">
+                {error} Retrying…
+              </p>
             ) : null}
           </section>
 
@@ -349,13 +191,13 @@ export function BookingPage() {
 
               <div className="ticket__tear" />
 
-              {selectionLabels.length > 0 ? (
+              {selection.labels.length > 0 ? (
                 <>
                   <p className="eyebrow">
-                    {selectionLabels.length} seat{selectionLabels.length > 1 ? 's' : ''} selected
+                    {selection.labels.length} seat{selection.labels.length > 1 ? 's' : ''} selected
                   </p>
                   <div className="ticket__seats">
-                    {selectionLabels.map((label) => (
+                    {selection.labels.map((label) => (
                       <span key={label} className="seat-chip">
                         {label}
                       </span>
@@ -369,10 +211,12 @@ export function BookingPage() {
                 </p>
               )}
 
-              {preflight && !preflight.ok ? (
+              {selection.preflight && !selection.preflight.ok ? (
                 <p className="ticket__notice" role="alert">
-                  {preflight.violation.message}
-                  {preflight.violation.diagram ? <code>{preflight.violation.diagram}</code> : null}
+                  {selection.preflight.violation.message}
+                  {selection.preflight.violation.diagram ? (
+                    <code>{selection.preflight.violation.diagram}</code>
+                  ) : null}
                 </p>
               ) : null}
 
@@ -380,16 +224,16 @@ export function BookingPage() {
                 <button
                   type="button"
                   className="btn btn--paper"
-                  disabled={busy || selected.length === 0 || (preflight ? !preflight.ok : false)}
+                  disabled={busy || selection.selected.length === 0 || blockedByRule}
                   onClick={handleHold}
                 >
                   Hold for {settings.holdMinutes} min
                 </button>
-                {selected.length > 0 ? (
+                {selection.selected.length > 0 ? (
                   <button
                     type="button"
                     className="btn btn--paper-ghost"
-                    onClick={() => setSelected([])}
+                    onClick={selection.clear}
                     disabled={busy}
                   >
                     Clear

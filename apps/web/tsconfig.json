@@ -9,8 +9,6 @@
     "noEmit": true,
     "declaration": false,
     "declarationMap": false,
-    "composite": false,
-    "allowImportingTsExtensions": false,
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]

@@ -84,7 +84,10 @@ export const api = {
   seatMap: (screeningId: number) => request<SeatMap>('GET', `/screenings/${screeningId}/seatmap`),
 
   myReservations: (screeningId: number) =>
-    request<{ reservations: Reservation[] }>('GET', `/screenings/${screeningId}/reservations`),
+    request<{ reservations: Reservation[] }>(
+      'GET',
+      `/screenings/${screeningId}/reservations?active=true`,
+    ),
 
   hold: (screeningId: number, seatIds: number[]) =>
     request<{ reservation: Reservation }>('POST', `/screenings/${screeningId}/reservations`, {

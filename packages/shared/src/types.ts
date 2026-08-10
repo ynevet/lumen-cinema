@@ -37,8 +37,6 @@ export interface SeatView {
   mine: boolean;
   /** Present only for seats the current user holds. ISO-8601. */
   holdExpiresAt: string | null;
-  /** Present only for seats occupied by the current user's own reservation. */
-  reservationId: string | null;
 }
 
 export interface SeatMapRow {
