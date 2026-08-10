@@ -94,11 +94,11 @@ That single decision does most of the work in this system:
 The child table repeats `screening_id`, `auditorium_id` and `status` from its parents. Each
 repeat buys a constraint that could not otherwise exist:
 
-| Column | What it makes possible |
-| --- | --- |
-| `screening_id` + `status` | The partial unique index that makes double booking impossible (below). |
-| `auditorium_id` | Composite FKs proving the seat and the screening are in the *same* hall. |
-| `status` | Lets that index see reservation state without a join. Kept in step by an `AFTER UPDATE` trigger on `reservations`, so it cannot drift. |
+| Column                    | What it makes possible                                                                                                                 |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `screening_id` + `status` | The partial unique index that makes double booking impossible (below).                                                                 |
+| `auditorium_id`           | Composite FKs proving the seat and the screening are in the _same_ hall.                                                               |
+| `status`                  | Lets that index see reservation state without a join. Kept in step by an `AFTER UPDATE` trigger on `reservations`, so it cannot drift. |
 
 ### The double-booking guard is an index, not application code
 
@@ -132,15 +132,15 @@ guess. Sequential integers would leak volume and invite enumeration; everything 
 
 ## Indexes
 
-| Index | Purpose |
-| --- | --- |
-| `users_email_lower_key` | Case-insensitive unique email without needing `citext`. |
-| `seats_auditorium_row_idx` | Drives the seat-map read in row/seat order. |
-| `screenings_starts_at_idx` | Ordering the showtimes list. |
-| `reservations_user_idx` | "My reservations", newest first. |
-| `reservations_active_holds_idx` | Partial on `status = 'held'`: the sweeper scans only live holds. |
-| `reservation_seats_one_active_occupant` | The double-booking guard. |
-| `reservation_seats_seat_idx` | Seat-map lookups by `(screening, seat)`. |
+| Index                                   | Purpose                                                          |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `users_email_lower_key`                 | Case-insensitive unique email without needing `citext`.          |
+| `seats_auditorium_row_idx`              | Drives the seat-map read in row/seat order.                      |
+| `screenings_starts_at_idx`              | Ordering the showtimes list.                                     |
+| `reservations_user_idx`                 | "My reservations", newest first.                                 |
+| `reservations_active_holds_idx`         | Partial on `status = 'held'`: the sweeper scans only live holds. |
+| `reservation_seats_one_active_occupant` | The double-booking guard.                                        |
+| `reservation_seats_seat_idx`            | Seat-map lookups by `(screening, seat)`.                         |
 
 ## Lifecycle of `reservation_status`
 

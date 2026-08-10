@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { pool } from './db/pool.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { apiLimiter, authLimiter } from './middleware/rateLimit.js';
 import { authRoutes } from './routes/authRoutes.js';
 import { screeningRoutes } from './routes/screeningRoutes.js';
 import { reservationRoutes } from './routes/reservationRoutes.js';
@@ -55,7 +56,9 @@ export function createApp(): express.Express {
     });
   });
 
-  app.use('/api/auth', authRoutes);
+  // Health and config sit above the limiter: container probes must never be throttled.
+  app.use('/api', apiLimiter);
+  app.use('/api/auth', authLimiter, authRoutes);
   app.use('/api/screenings', screeningRoutes);
   app.use('/api/reservations', reservationRoutes);
 

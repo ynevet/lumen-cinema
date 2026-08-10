@@ -1,3 +1,4 @@
+-- Up Migration
 -- ============================================================================
 -- 001_init - cinema reservation schema
 -- ============================================================================
@@ -153,3 +154,19 @@ CREATE TRIGGER reservations_status_sync
     FOR EACH ROW
     WHEN (OLD.status IS DISTINCT FROM NEW.status)
     EXECUTE FUNCTION sync_reservation_seat_status();
+
+-- Down Migration
+-- Dropped in dependency order; CASCADE would also work but naming each object
+-- keeps the rollback explicit about what it destroys.
+DROP TRIGGER IF EXISTS reservations_status_sync ON reservations;
+DROP FUNCTION IF EXISTS sync_reservation_seat_status();
+
+DROP TABLE IF EXISTS reservation_seats;
+DROP TABLE IF EXISTS reservations;
+DROP TABLE IF EXISTS screenings;
+DROP TABLE IF EXISTS movies;
+DROP TABLE IF EXISTS seats;
+DROP TABLE IF EXISTS auditoriums;
+DROP TABLE IF EXISTS users;
+
+DROP TYPE IF EXISTS reservation_status;

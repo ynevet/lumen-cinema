@@ -1,7 +1,7 @@
 import type { Reservation, ReservationSeatSummary, ReservationStatus } from '@lumen/shared';
 import { validateSeatSelection } from '@lumen/shared';
 import { config } from '../config.js';
-import { pool, withTransaction, type DbClient, type Queryable } from '../db/pool.js';
+import { pool, withTransaction, type Queryable } from '../db/pool.js';
 import { AppError, PG_UNIQUE_VIOLATION, isPgError } from '../errors.js';
 import { logger } from '../logger.js';
 import { getScreeningOrThrow, loadSeatRows } from './screeningService.js';
@@ -177,12 +177,7 @@ export async function createHold(input: CreateHoldInput): Promise<Reservation> {
       await releaseExpiredHolds(tx, input.screeningId);
 
       // Read the row as it now stands, under the lock.
-      const rowSeats = await loadSeatRows(
-        input.screeningId,
-        screening.auditoriumId,
-        tx,
-        rowLabel,
-      );
+      const rowSeats = await loadSeatRows(input.screeningId, screening.auditoriumId, tx, rowLabel);
 
       const occupied = rowSeats
         .filter((seat) => seat.hold_status !== null)
@@ -299,10 +294,7 @@ export async function cancelHold(reservationId: string, userId: number): Promise
  * Load a reservation that belongs to this user. A reservation owned by somebody else is
  * reported as absent rather than forbidden, so ids cannot be probed for existence.
  */
-async function loadOwnReservation(
-  reservationId: string,
-  userId: number,
-): Promise<ReservationRow> {
+async function loadOwnReservation(reservationId: string, userId: number): Promise<ReservationRow> {
   const { rows } = await pool.query<ReservationRow & { user_id: number }>(
     `SELECT id, user_id, screening_id, status, created_at, expires_at, confirmed_at
        FROM reservations WHERE id = $1`,

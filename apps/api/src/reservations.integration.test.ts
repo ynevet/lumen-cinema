@@ -15,6 +15,7 @@ import type { SeatMap } from '@lumen/shared';
 import { createApp } from './app.js';
 import { closePool, pool } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
+import { runSeed } from './db/seed.js';
 
 let app: Express;
 let screeningId: number;
@@ -58,7 +59,10 @@ function hold(token: string, ids: number[]) {
 }
 
 beforeAll(async () => {
+  // Both are idempotent, so the suite is self-sufficient: it works against a database the
+  // API has never booted against, which is what CI gives us.
   await runMigrations();
+  await runSeed();
   app = createApp();
 
   // A private screening in the seeded hall keeps this run isolated from every other.
@@ -71,7 +75,8 @@ beforeAll(async () => {
      RETURNING id`,
   );
   const created = rows[0];
-  if (!created) throw new Error('Seed data missing - start the API once to seed, or run RUN_SEED=true.');
+  if (!created)
+    throw new Error('Seed data missing - start the API once to seed, or run RUN_SEED=true.');
   screeningId = created.id;
 
   alice = await signUp(app, 'alice');
@@ -153,9 +158,7 @@ describe('concurrency', () => {
     const contested = seatIds(map, 'H', [4, 5]);
 
     const responses = await Promise.all(
-      Array.from({ length: 10 }, (_, index) =>
-        hold(index % 2 === 0 ? alice : bob, contested),
-      ),
+      Array.from({ length: 10 }, (_, index) => hold(index % 2 === 0 ? alice : bob, contested)),
     );
 
     const created = responses.filter((response) => response.status === 201);
@@ -267,7 +270,7 @@ describe('hold lifecycle', () => {
     await hold(bob, ids).expect(201);
   });
 
-  it('hides other people\'s reservations behind a 404', async () => {
+  it("hides other people's reservations behind a 404", async () => {
     const map = await seatMap(alice);
     const created = await hold(alice, seatIds(map, 'B', [1, 2])).expect(201);
 

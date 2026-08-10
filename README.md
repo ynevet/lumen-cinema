@@ -4,14 +4,15 @@ A full-stack cinema booking application: sign in, view the seating map for a scr
 seats for 15 minutes, and complete the reservation. Two people can never end up with the same
 seat, and the seat-selection rules are enforced on the server.
 
-**Stack:** React 19 + Vite · Node.js 24 + TypeScript + Express 5 · PostgreSQL 17 · Docker Compose
+**Stack:** React 19 + Vite + TanStack Query · Node.js 24 + TypeScript + Express 5 ·
+PostgreSQL 17 · Docker Compose
 
-| | |
-| --- | --- |
-| Entity relationship diagram | [`docs/ERD.md`](docs/ERD.md) |
-| Architecture and design decisions | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| Schema (authoritative) | [`apps/api/db/migrations/001_init.sql`](apps/api/db/migrations/001_init.sql) |
-| Seat rules (shared by client and server) | [`packages/shared/src/seatRules.ts`](packages/shared/src/seatRules.ts) |
+|                                          |                                                                              |
+| ---------------------------------------- | ---------------------------------------------------------------------------- |
+| Entity relationship diagram              | [`docs/ERD.md`](docs/ERD.md)                                                 |
+| Architecture and design decisions        | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                               |
+| Schema (authoritative)                   | [`apps/api/db/migrations/001_init.sql`](apps/api/db/migrations/001_init.sql) |
+| Seat rules (shared by client and server) | [`packages/shared/src/seatRules.ts`](packages/shared/src/seatRules.ts)       |
 
 ---
 
@@ -42,10 +43,10 @@ docker compose down -v  # stop and wipe the database
 Three accounts are seeded. Open two browsers, sign in as different people, and race for the
 same seat.
 
-| Email | Password |
-| --- | --- |
+| Email               | Password       |
+| ------------------- | -------------- |
 | `alice@example.com` | `Password123!` |
-| `bob@example.com` | `Password123!` |
+| `bob@example.com`   | `Password123!` |
 | `carol@example.com` | `Password123!` |
 
 Or create your own account from the sign-in screen.
@@ -105,7 +106,7 @@ Three layers, described in full in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md
    application code being correct, single-process, or the only writer.
 2. **A per-cinema-row advisory lock** taken for the duration of the transaction. Rule 2 is a
    statement about a whole row, so without it two users could each pass validation and
-   *together* strand a seat.
+   _together_ strand a seat.
 3. **Expired holds are reaped inside the same transaction**, so a seat freed a second ago is
    immediately reusable.
 
@@ -117,6 +118,20 @@ Try it: `docker compose up`, sign in as Alice and Bob in two browsers, and click
 seat at the same time. One of you gets it; the other is told, and the map refreshes.
 
 ---
+
+## Quality gates
+
+```bash
+npm run verify   # lint + format check + typecheck + tests
+```
+
+Individually: `npm run lint`, `npm run format:check`, `npm run typecheck`, `npm test`.
+All four run on every push and pull request via [GitHub Actions](.github/workflows/ci.yml),
+along with a `docker compose build` that proves the documented setup path still works.
+
+ESLint runs the React Compiler rules from `eslint-plugin-react-hooks`, which catch the
+class of bug — `setState` inside effects, impure reads during render — that is invisible in
+review and surfaces only as a wrong screen.
 
 ## Tests
 
@@ -142,19 +157,19 @@ seeded data.
 All routes are under `/api`. Everything except `/auth/*`, `/health` and `/config` requires
 `Authorization: Bearer <jwt>`.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/auth/register` | Create an account, returns a token |
-| `POST` | `/auth/login` | Sign in |
-| `GET` | `/auth/me` | Verify a stored token |
-| `GET` | `/config` | Hold duration and seat cap, so the UI does not hard-code them |
-| `GET` | `/health` | Liveness plus database reachability |
-| `GET` | `/screenings` | Upcoming showtimes |
-| `GET` | `/screenings/:id/seatmap` | The seating map with every seat's status |
-| `POST` | `/screenings/:id/reservations` | Hold seats — `{ seatIds: number[] }` |
-| `GET` | `/screenings/:id/reservations` | Your reservations here; `?active=true` for live ones |
-| `POST` | `/reservations/:id/confirm` | Complete the reservation: held → booked |
-| `DELETE` | `/reservations/:id` | Release a hold early |
+| Method   | Path                           | Purpose                                                       |
+| -------- | ------------------------------ | ------------------------------------------------------------- |
+| `POST`   | `/auth/register`               | Create an account, returns a token                            |
+| `POST`   | `/auth/login`                  | Sign in                                                       |
+| `GET`    | `/auth/me`                     | Verify a stored token                                         |
+| `GET`    | `/config`                      | Hold duration and seat cap, so the UI does not hard-code them |
+| `GET`    | `/health`                      | Liveness plus database reachability                           |
+| `GET`    | `/screenings`                  | Upcoming showtimes                                            |
+| `GET`    | `/screenings/:id/seatmap`      | The seating map with every seat's status                      |
+| `POST`   | `/screenings/:id/reservations` | Hold seats — `{ seatIds: number[] }`                          |
+| `GET`    | `/screenings/:id/reservations` | Your reservations here; `?active=true` for live ones          |
+| `POST`   | `/reservations/:id/confirm`    | Complete the reservation: held → booked                       |
+| `DELETE` | `/reservations/:id`            | Release a hold early                                          |
 
 Errors are always `{ error: { code, message, details? } }`. `409` means you lost a race and
 should retry; `422` means the selection breaks a rule. Rule violations include a
@@ -167,17 +182,20 @@ should retry; `422` means the selection breaks a rule. Rule violations include a
 Every value has a working default; `.env` is only needed outside Docker. See
 [`.env.example`](.env.example).
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | — | Postgres connection string (required) |
-| `JWT_SECRET` | — | Token signing key, min 16 chars (required) |
-| `HOLD_MINUTES` | `15` | How long a hold survives |
-| `MAX_SEATS_PER_RESERVATION` | `10` | Cap on one reservation |
-| `EXPIRY_SWEEP_MS` | `15000` | Sweeper cadence |
-| `RUN_MIGRATIONS` / `RUN_SEED` | `true` | Startup behaviour |
-| `PORT` / `WEB_PORT` | `4000` / `8080` | Ports |
+| Variable                         | Default                  | Purpose                                    |
+| -------------------------------- | ------------------------ | ------------------------------------------ |
+| `DATABASE_URL`                   | —                        | Postgres connection string (required)      |
+| `JWT_SECRET`                     | —                        | Token signing key, min 16 chars (required) |
+| `HOLD_MINUTES`                   | `15`                     | How long a hold survives                   |
+| `MAX_SEATS_PER_RESERVATION`      | `10`                     | Cap on one reservation                     |
+| `EXPIRY_SWEEP_MS`                | `15000`                  | Sweeper cadence                            |
+| `RUN_MIGRATIONS` / `RUN_SEED`    | `true`                   | Startup behaviour                          |
+| `PORT` / `API_PORT` / `WEB_PORT` | `4000` / `4000` / `8080` | Ports                                      |
 
 The server refuses to start on invalid configuration rather than booting half-configured.
+
+Sign-in is rate limited to 20 **failed** attempts per IP per 15 minutes. Successful sign-ins
+are not counted, so ordinary use is never throttled.
 
 ---
 

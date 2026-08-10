@@ -16,6 +16,11 @@
     "dev": "npm run build -w @lumen/shared && concurrently -n api,web -c cyan,magenta \"npm run dev -w @lumen/api\" \"npm run dev -w @lumen/web\"",
     "test": "npm run build -w @lumen/shared && npm run test -w @lumen/shared && npm run test -w @lumen/api",
     "typecheck": "npm run build -w @lumen/shared && tsc -b apps/api apps/web --pretty",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "npm run lint && npm run format:check && npm run typecheck && npm test",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "docker:up": "docker compose up --build",
@@ -23,8 +28,15 @@
     "docker:reset": "docker compose down -v"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "concurrently": "^9.1.2",
-    "typescript": "^5.7.3"
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.9.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.67.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

@@ -19,27 +19,35 @@ function format(totalSeconds: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
-function secondsLeft(expiresAt: string): number {
-  return Math.max(0, Math.round((new Date(expiresAt).getTime() - Date.now()) / 1000));
-}
-
-export function HoldCard({ reservation, holdMinutes, onConfirm, onRelease, busy, onExpire }: Props) {
+export function HoldCard({
+  reservation,
+  holdMinutes,
+  onConfirm,
+  onRelease,
+  busy,
+  onExpire,
+}: Props) {
   const isBooked = reservation.status === 'booked';
-  const [remaining, setRemaining] = useState(() => secondsLeft(reservation.expiresAt));
+
+  // The only state is the current time; everything shown is derived from it. A changed
+  // `expiresAt` is therefore reflected on the next tick with no resynchronising effect.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (isBooked) return;
-    setRemaining(secondsLeft(reservation.expiresAt));
-    const timer = setInterval(() => {
-      const next = secondsLeft(reservation.expiresAt);
-      setRemaining(next);
-      if (next === 0) {
-        clearInterval(timer);
-        onExpire(reservation.id);
-      }
-    }, 1000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [reservation.id, reservation.expiresAt, isBooked, onExpire]);
+  }, [isBooked]);
+
+  const remaining = Math.max(
+    0,
+    Math.round((new Date(reservation.expiresAt).getTime() - now) / 1000),
+  );
+
+  // `remaining` only reaches 0 once, so this fires a single time per hold.
+  useEffect(() => {
+    if (!isBooked && remaining === 0) onExpire(reservation.id);
+  }, [isBooked, remaining, reservation.id, onExpire]);
 
   const seats = reservation.seats.map((seat) => `${seat.rowLabel}${seat.seatNumber}`);
   const urgent = !isBooked && remaining <= URGENT_SECONDS;

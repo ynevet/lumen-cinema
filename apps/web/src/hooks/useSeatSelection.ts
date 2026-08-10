@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { SeatMap, SeatMapRow, SeatView } from '@lumen/shared';
 import { validateSeatSelection, type SelectionResult } from '@lumen/shared';
 
@@ -17,6 +17,12 @@ export interface SeatSelection {
   clear: () => void;
 }
 
+interface SelectionState {
+  /** The screening the ids belong to. Seat ids are per-hall, so this must be checked. */
+  screeningId: number | null;
+  seatIds: number[];
+}
+
 function seatNumbers(ids: readonly number[], index: Map<number, SeatView>): number[] {
   return ids
     .map((id) => index.get(id)?.seatNumber)
@@ -33,13 +39,18 @@ function isContiguous(numbers: readonly number[]): boolean {
  * Owns the pending seat selection and keeps it legal by construction: one row, always
  * contiguous. Clicking somewhere that cannot extend the current run starts a new one,
  * which is less irritating than an error message for something we can simply fix.
+ *
+ * Both ways a selection can go stale - switching screening, and somebody else taking a
+ * seat we had pencilled in - are resolved by *deriving* the effective selection during
+ * render rather than by effects that write state. No extra render pass, and no window in
+ * which the rest of the UI can observe a selection that is no longer valid.
  */
 export function useSeatSelection(
   seatMap: SeatMap | null,
   screeningId: number | null,
   maxSeats: number,
 ): SeatSelection {
-  const [selected, setSelected] = useState<number[]>([]);
+  const [state, setState] = useState<SelectionState>({ screeningId, seatIds: [] });
 
   const seats = useMemo(() => {
     const index = new Map<number, SeatView>();
@@ -53,46 +64,47 @@ export function useSeatSelection(
     return { index, rows };
   }, [seatMap]);
 
-  // Seat ids are per-hall, not per-screening, so a stale selection would silently carry
-  // across a showtime change. Start clean instead.
-  useEffect(() => setSelected([]), [screeningId]);
-
-  // Someone else may take a seat we have pencilled in. Drop it - and if losing it would
-  // leave a gap in the middle of the run, drop the whole selection rather than leave the
-  // user holding something the rules will reject.
-  useEffect(() => {
-    if (!seatMap) return;
-    setSelected((current) => {
-      if (current.length === 0) return current;
-      const kept = current.filter((id) => seats.index.get(id)?.status === 'available');
-      if (kept.length === current.length) return current;
-      return isContiguous(seatNumbers(kept, seats.index)) ? kept : [];
-    });
-  }, [seatMap, seats]);
+  const selected = useMemo(() => {
+    // A selection made for another showtime does not carry over.
+    if (state.screeningId !== screeningId) return [];
+    // Drop seats somebody else has taken since. If losing one would split the run, drop
+    // the lot rather than leave the user holding something the rules will reject.
+    const kept = state.seatIds.filter((id) => seats.index.get(id)?.status === 'available');
+    if (kept.length === state.seatIds.length) return state.seatIds;
+    return isContiguous(seatNumbers(kept, seats.index)) ? kept : [];
+  }, [state, screeningId, seats]);
 
   const toggle = useCallback(
     (seat: SeatView) => {
-      setSelected((current) => {
-        const numbers = seatNumbers(current, seats.index);
+      const numbers = seatNumbers(selected, seats.index);
+      const only = (id: number): SelectionState => ({ screeningId, seatIds: [id] });
 
-        if (current.includes(seat.id)) {
-          const isEndpoint =
-            seat.seatNumber === numbers[0] || seat.seatNumber === numbers[numbers.length - 1];
-          // Removing from the middle would split the run - restart from here instead.
-          return isEndpoint ? current.filter((id) => id !== seat.id) : [seat.id];
-        }
+      if (selected.includes(seat.id)) {
+        const isEndpoint =
+          seat.seatNumber === numbers[0] || seat.seatNumber === numbers[numbers.length - 1];
+        // Removing from the middle would split the run - restart from here instead.
+        setState(
+          isEndpoint
+            ? { screeningId, seatIds: selected.filter((id) => id !== seat.id) }
+            : only(seat.id),
+        );
+        return;
+      }
 
-        if (current.length === 0) return [seat.id];
-        if (current.length >= maxSeats) return [seat.id];
-        if (seats.rows.get(current[0]!)?.label !== seat.rowLabel) return [seat.id];
+      if (selected.length === 0 || selected.length >= maxSeats) {
+        setState(only(seat.id));
+        return;
+      }
+      if (seats.rows.get(selected[0]!)?.label !== seat.rowLabel) {
+        setState(only(seat.id));
+        return;
+      }
 
-        const extendsRun =
-          seat.seatNumber === numbers[0]! - 1 ||
-          seat.seatNumber === numbers[numbers.length - 1]! + 1;
-        return extendsRun ? [...current, seat.id] : [seat.id];
-      });
+      const extendsRun =
+        seat.seatNumber === numbers[0]! - 1 || seat.seatNumber === numbers[numbers.length - 1]! + 1;
+      setState(extendsRun ? { screeningId, seatIds: [...selected, seat.id] } : only(seat.id));
     },
-    [seats, maxSeats],
+    [selected, seats, screeningId, maxSeats],
   );
 
   const row = selected[0] === undefined ? null : (seats.rows.get(selected[0]) ?? null);
@@ -112,7 +124,7 @@ export function useSeatSelection(
     [selected, row, seats],
   );
 
-  const clear = useCallback(() => setSelected([]), []);
+  const clear = useCallback(() => setState({ screeningId, seatIds: [] }), [screeningId]);
 
   return { selected, labels, preflight, toggle, clear };
 }

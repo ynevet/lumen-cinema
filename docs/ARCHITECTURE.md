@@ -44,7 +44,7 @@ take a lock.
 
 **A per-row advisory lock**, `pg_advisory_xact_lock(screening_id, row_index)`. Rule 2 is a
 statement about a whole cinema row, so two transactions that read the row at the same moment
-could each pass validation and *together* strand a seat — a race the unique index cannot see,
+could each pass validation and _together_ strand a seat — a race the unique index cannot see,
 because they are inserting different seats. The lock serialises everyone competing for the
 same row. Since Rule 1 confines a selection to a single row, the row is the tightest
 granularity that is still correct: different rows and different screenings never contend.
@@ -98,7 +98,7 @@ POST /api/screenings/:id/reservations  { seatIds: [42, 43] }
 ## Interpreting Rule 2
 
 The brief says a selection "must not leave a single empty seat trapped between occupied
-seats". Taken literally as a check on the resulting layout, a row that *already* contains a
+seats". Taken literally as a check on the resulting layout, a row that _already_ contains a
 trapped seat — which happens naturally when a hold expires or a booking is cancelled — would
 reject every subsequent selection in that row, making those seats permanently unsellable.
 
@@ -126,13 +126,13 @@ and then writes, and those two steps must be seen as one.
 
 Every non-2xx response is `{ error: { code, message, details? } }`.
 
-| Status | Meaning | Examples |
-| --- | --- | --- |
-| 400 | Malformed request | `VALIDATION_FAILED` |
-| 401 | Not signed in | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED` |
-| 404 | Absent, or not yours | `RESERVATION_NOT_FOUND` |
-| 409 | You lost a race | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED` |
-| 422 | You broke a rule | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT` |
+| Status | Meaning              | Examples                                            |
+| ------ | -------------------- | --------------------------------------------------- |
+| 400    | Malformed request    | `VALIDATION_FAILED`                                 |
+| 401    | Not signed in        | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`              |
+| 404    | Absent, or not yours | `RESERVATION_NOT_FOUND`                             |
+| 409    | You lost a race      | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED`                  |
+| 422    | You broke a rule     | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT` |
 
 The 409/422 split is deliberate: 409 means "try again, the world moved", 422 means "this
 selection is not allowed no matter when you send it". The client treats them differently —
@@ -141,12 +141,41 @@ selection is not allowed no matter when you send it". The client treats them dif
 Rule violations carry a `details.diagram` such as `# # . * * . . . . .`, in the same notation
 the specification uses. It is rendered in the UI and asserted in tests.
 
+## Dependencies: what we use, and what we deliberately wrote
+
+The rule applied here: **reach for a library when the problem is genuinely solved and the
+failure modes are subtle; write the code when it is the thing being assessed.**
+
+Leaning on a package:
+
+| Package                                                      | Replaces                       | Why                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@tanstack/react-query`                                      | A hand-rolled polling hook     | Polling, pausing in a background tab, refetch on focus, request de-duplication, cancellation and stale-response handling are each individually easy and collectively a source of quiet bugs. Keying the cache by screening id makes the stale-response problem structurally impossible rather than guarded against. |
+| `node-pg-migrate`                                            | A hand-rolled migration runner | A ledger table, per-migration transactions, ordering checks and an advisory lock so two replicas cannot migrate at once. Migrations stay plain `.sql`, and we gained a real `down`.                                                                                                                                 |
+| `express-rate-limit`                                         | Nothing — this was a gap       | Credential-stuffing protection with correct `RateLimit` headers. `skipSuccessfulRequests` means only failed sign-ins count, so a legitimate user is never locked out by their own success.                                                                                                                          |
+| `zod`                                                        | Hand-written validators        | Request bodies and environment configuration, with the parsed type inferred rather than restated.                                                                                                                                                                                                                   |
+| `eslint` + `typescript-eslint` + `eslint-plugin-react-hooks` | Review vigilance               | The React Compiler rules caught seven real defects on first run — `setState` inside effects, and an impure `Date.now()` during render. That class of bug is invisible in review and shows up only as a wrong screen.                                                                                                |
+| `helmet`, `cors`, `pino`, `bcryptjs`, `jsonwebtoken`         | —                              | Unremarkable, correct, boring. Exactly right.                                                                                                                                                                                                                                                                       |
+
+Deliberately **not** using a package:
+
+- **No ORM, and no query builder (Prisma / Drizzle / Kysely).** The interesting parts of
+  this system are a partial unique index, an advisory lock, and a lateral join. An ORM hides
+  precisely those. Kysely was the closest call — it is a type-safe builder rather than an
+  ORM, and would remove the hand-written row interfaces — but it would mean rewriting every
+  query with `sql` escape hatches at each of the interesting points, which is churn without
+  a payoff at this size.
+- **No toast library.** `sonner` would do it, but the toast here is a styled part of the
+  ticket-stub design and the state involved is about forty lines.
+- **No `axios`, `date-fns` or `lodash`.** `fetch`, `Intl` and the standard library cover
+  every use in this codebase. Each would be a dependency carrying weight for nothing.
+- **No `passport`.** One JWT strategy is a fifteen-line middleware; Passport's value is in
+  having many strategies.
+
 ## Deliberate omissions
 
 Worth naming, since they were choices rather than oversights:
 
-- **No ORM.** The interesting parts of this system are a partial unique index, an advisory
-  lock and a lateral join. Those are the things an ORM hides.
 - **Polling, not WebSockets.** The client re-reads the seat map every 4 seconds and on tab
   focus. A socket would be the right answer at higher contention; for one hall it adds a
   stateful connection, reconnection logic and a scaling constraint for a barely different
@@ -155,4 +184,5 @@ Worth naming, since they were choices rather than oversights:
   provider would sit between them and change nothing structural.
 - **JWT in `localStorage`.** Simple and appropriate for this scale. Production would use
   an httpOnly, SameSite cookie with a refresh token to remove the XSS token-theft surface.
-- **No rate limiting.** Would be the first thing added before exposing this to the internet.
+- **Rate limiting is in-memory.** Correct for a single instance; more than one replica needs
+  a shared store (`rate-limit-redis`), which is a deployment decision rather than a code one.

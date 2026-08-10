@@ -9,6 +9,7 @@ import {
 } from 'react';
 import type { PublicUser } from '@lumen/shared';
 import { api, onUnauthorized, tokenStore } from '../api/client';
+import { queryClient } from '../queryClient';
 
 interface AuthState {
   user: PublicUser | null;
@@ -22,10 +23,17 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<PublicUser | null>(null);
-  const [status, setStatus] = useState<AuthState['status']>('checking');
+  // With no stored token there is nothing to verify, so we start signed out rather than
+  // flashing a "checking" screen and correcting it in an effect.
+  const [status, setStatus] = useState<AuthState['status']>(() =>
+    tokenStore.get() ? 'checking' : 'signed-out',
+  );
 
   const signOut = useCallback(() => {
     tokenStore.clear();
+    // Cached seat maps carry `mine` flags for the user who fetched them. Signing out
+    // without dropping the cache would show the next person somebody else's seats.
+    queryClient.clear();
     setUser(null);
     setStatus('signed-out');
   }, []);
@@ -33,11 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // A stored token may have expired while the tab was closed - verify before trusting it.
   useEffect(() => {
     let cancelled = false;
-    const token = tokenStore.get();
-    if (!token) {
-      setStatus('signed-out');
-      return;
-    }
+    if (!tokenStore.get()) return;
     api
       .me()
       .then(({ user: me }) => {
@@ -67,12 +71,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('signed-in');
   }, []);
 
-  const signUp = useCallback(async (input: { email: string; displayName: string; password: string }) => {
-    const result = await api.register(input);
-    tokenStore.set(result.token);
-    setUser(result.user);
-    setStatus('signed-in');
-  }, []);
+  const signUp = useCallback(
+    async (input: { email: string; displayName: string; password: string }) => {
+      const result = await api.register(input);
+      tokenStore.set(result.token);
+      setUser(result.user);
+      setStatus('signed-in');
+    },
+    [],
+  );
 
   const value = useMemo<AuthState>(
     () => ({ user, status, signIn, signUp, signOut }),

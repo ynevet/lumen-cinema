@@ -1,0 +1,8 @@
+dist/
+node_modules/
+coverage/
+package-lock.json
+*.tsbuildinfo
+
+# Hand-aligned for readability; Prettier does not format SQL anyway.
+apps/api/db/migrations/

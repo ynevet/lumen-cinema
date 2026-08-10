@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { Screening } from '@lumen/shared';
+import { useCallback, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import type { Reservation } from '@lumen/shared';
 import { ApiError, api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { useSeatMap } from '../hooks/useSeatMap';
@@ -8,12 +9,7 @@ import { useToast } from './Toasts';
 import { SeatMapView } from './SeatMapView';
 import { HoldCard } from './HoldCard';
 
-interface Settings {
-  holdMinutes: number;
-  maxSeatsPerReservation: number;
-}
-
-const FALLBACK_SETTINGS: Settings = { holdMinutes: 15, maxSeatsPerReservation: 10 };
+const FALLBACK_SETTINGS = { holdMinutes: 15, maxSeatsPerReservation: 10 };
 
 function formatShowtime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -23,97 +19,113 @@ function formatDay(iso: string): string {
   return new Date(iso).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
+function seatList(seats: Reservation['seats']): string {
+  return seats.map((seat) => `${seat.rowLabel}${seat.seatNumber}`).join(', ');
+}
+
 export function BookingPage() {
   const { user, signOut } = useAuth();
   const toast = useToast();
+  const [chosenId, setChosenId] = useState<number | null>(null);
 
-  const [settings, setSettings] = useState<Settings>(FALLBACK_SETTINGS);
-  const [screenings, setScreenings] = useState<Screening[]>([]);
-  const [screeningId, setScreeningId] = useState<number | null>(null);
-  const [fatal, setFatal] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // Hold rules and duration come from the server so the UI never hard-codes them.
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.settings(),
+    staleTime: Infinity,
+  });
+  const settings = settingsQuery.data ?? FALLBACK_SETTINGS;
 
-  const { seatMap, reservations, loading, error, refresh } = useSeatMap(screeningId);
+  const screeningsQuery = useQuery({
+    queryKey: ['screenings'],
+    queryFn: () => api.screenings().then((result) => result.screenings),
+    staleTime: 60_000,
+  });
+  const screenings = screeningsQuery.data ?? [];
+
+  // Default to the next showing until the user picks one - derived, so no effect and no
+  // render pass where the page has screenings but nothing selected.
+  const screeningId = chosenId ?? screenings[0]?.id ?? null;
+
+  const { seatMap, reservations, loading, stale, refresh } = useSeatMap(screeningId);
   const selection = useSeatSelection(seatMap, screeningId, settings.maxSeatsPerReservation);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([api.settings(), api.screenings()])
-      .then(([config, { screenings: list }]) => {
-        if (cancelled) return;
-        setSettings(config);
-        setScreenings(list);
-        setScreeningId((current) => current ?? list[0]?.id ?? null);
-        if (list.length === 0) setFatal('No screenings are scheduled.');
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled && caught instanceof ApiError && caught.status !== 401) {
-          setFatal('Cannot reach the box office.');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  /** Every action follows the same shape: run it, re-read, say what happened. */
-  const run = useCallback(
-    async (action: () => Promise<string>) => {
-      setBusy(true);
-      try {
-        const message = await action();
-        await refresh();
-        toast.push({ tone: 'success', message });
-      } catch (caught) {
-        if (caught instanceof ApiError) {
-          const details = caught.details as { diagram?: string } | undefined;
-          toast.push({ tone: 'error', message: caught.message, diagram: details?.diagram });
-          // The world moved underneath us - show what it looks like now.
-          if (caught.status === 409) await refresh().catch(() => undefined);
-        }
-      } finally {
-        setBusy(false);
-      }
+  const reportFailure = useCallback(
+    async (error: unknown) => {
+      if (!(error instanceof ApiError)) return;
+      const details = error.details as { diagram?: string } | undefined;
+      toast.push({ tone: 'error', message: error.message, diagram: details?.diagram });
+      // The world moved underneath us - show what it looks like now.
+      if (error.status === 409) await refresh();
     },
     [refresh, toast],
   );
 
-  const seatList = (seats: { rowLabel: string; seatNumber: number }[]): string =>
-    seats.map((seat) => `${seat.rowLabel}${seat.seatNumber}`).join(', ');
-
-  const handleHold = () =>
-    run(async () => {
-      const { reservation } = await api.hold(screeningId!, selection.selected);
+  const hold = useMutation({
+    mutationFn: (seatIds: number[]) => api.hold(screeningId as number, seatIds),
+    onSuccess: async ({ reservation }) => {
       selection.clear();
-      return `Holding ${seatList(reservation.seats)} for ${settings.holdMinutes} minutes.`;
-    });
+      await refresh();
+      toast.push({
+        tone: 'success',
+        message: `Holding ${seatList(reservation.seats)} for ${settings.holdMinutes} minutes.`,
+      });
+    },
+    onError: reportFailure,
+  });
 
-  const handleConfirm = (reservationId: string) =>
-    run(async () => {
-      const { reservation } = await api.confirm(reservationId);
-      return `Booked ${seatList(reservation.seats)}. Enjoy the film.`;
-    });
+  const confirm = useMutation({
+    mutationFn: (reservationId: string) => api.confirm(reservationId),
+    onSuccess: async ({ reservation }) => {
+      await refresh();
+      toast.push({
+        tone: 'success',
+        message: `Booked ${seatList(reservation.seats)}. Enjoy the film.`,
+      });
+    },
+    onError: reportFailure,
+  });
 
-  const handleRelease = (reservationId: string) =>
-    run(async () => {
-      await api.release(reservationId);
-      return 'Seats released.';
-    });
+  const release = useMutation({
+    mutationFn: (reservationId: string) => api.release(reservationId),
+    onSuccess: async () => {
+      await refresh();
+      toast.push({ tone: 'info', message: 'Seats released.' });
+    },
+    onError: reportFailure,
+  });
 
   const handleExpire = useCallback(() => {
     toast.push({ tone: 'info', message: 'A hold ran out and those seats went back on sale.' });
-    void refresh().catch(() => undefined);
+    void refresh();
   }, [refresh, toast]);
 
+  const busy = hold.isPending || confirm.isPending || release.isPending;
   const screening = seatMap?.screening;
-  const now = Date.now();
+  const blockedByRule = selection.preflight !== null && !selection.preflight.ok;
+
+  // The server already returns only live holds and bookings (`?active=true`). A hold that
+  // lapses between polls is handled by its own countdown, which disables Confirm at zero
+  // and calls `onExpire` to refresh - so no clock reading is needed during render.
   const liveHolds = reservations.filter(
-    (item) =>
-      item.status === 'booked' ||
-      (item.status === 'held' && new Date(item.expiresAt).getTime() > now),
+    (item) => item.status === 'booked' || item.status === 'held',
   );
 
-  const blockedByRule = selection.preflight !== null && !selection.preflight.ok;
+  if (screeningsQuery.isError) {
+    return (
+      <div className="center-note">
+        <p>Cannot reach the box office.</p>
+      </div>
+    );
+  }
+
+  if (screeningsQuery.isSuccess && screenings.length === 0) {
+    return (
+      <div className="center-note">
+        <p>No screenings are scheduled.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="hall">
@@ -131,135 +143,128 @@ export function BookingPage() {
         </button>
       </header>
 
-      {fatal ? (
-        <div className="center-note">
-          <p>{fatal}</p>
-        </div>
-      ) : (
-        <main className="stage">
-          <section>
-            <p className="eyebrow" style={{ marginBottom: 10 }}>
-              Next at Hall 1
+      <main className="stage">
+        <section>
+          <p className="eyebrow" style={{ marginBottom: 10 }}>
+            Next at Hall 1
+          </p>
+          <div className="showings" role="group" aria-label="Choose a screening">
+            {screenings.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="showing"
+                aria-pressed={item.id === screeningId}
+                onClick={() => setChosenId(item.id)}
+              >
+                <div className="showing__time">{formatShowtime(item.startsAt)}</div>
+                <div className="showing__title">{item.movieTitle}</div>
+              </button>
+            ))}
+          </div>
+
+          {loading && !seatMap ? (
+            <div className="center-note">
+              <div className="spinner" aria-hidden="true" />
+              <p>Reading the seat plan…</p>
+            </div>
+          ) : seatMap ? (
+            // Remounting per screening replays the entry animation exactly once.
+            <SeatMapView
+              key={screeningId}
+              seatMap={seatMap}
+              selected={new Set(selection.selected)}
+              onToggleSeat={selection.toggle}
+            />
+          ) : null}
+
+          {stale ? (
+            <p className="tally" role="status">
+              Lost contact with the box office. Retrying…
             </p>
-            <div className="showings" role="group" aria-label="Choose a screening">
-              {screenings.map((item) => (
+          ) : null}
+        </section>
+
+        <aside className="rail">
+          <div className="stub ticket">
+            <p className="eyebrow">Your ticket</p>
+            <h2 className="ticket__film">{screening?.movieTitle ?? '—'}</h2>
+            <p className="ticket__meta">
+              {screening ? formatDay(screening.startsAt) : '—'} ·{' '}
+              {screening ? formatShowtime(screening.startsAt) : '—'}
+              <br />
+              {screening?.auditoriumName ?? '—'} · {screening?.movieDurationMinutes ?? '—'} min
+            </p>
+
+            <div className="ticket__tear" />
+
+            {selection.labels.length > 0 ? (
+              <>
+                <p className="eyebrow">
+                  {selection.labels.length} seat{selection.labels.length > 1 ? 's' : ''} selected
+                </p>
+                <div className="ticket__seats">
+                  {selection.labels.map((label) => (
+                    <span key={label} className="seat-chip">
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="ticket__empty">
+                Pick a seat on the plan. Seats in one booking must sit side by side in the same row.
+              </p>
+            )}
+
+            {selection.preflight && !selection.preflight.ok ? (
+              <p className="ticket__notice" role="alert">
+                {selection.preflight.violation.message}
+                {selection.preflight.violation.diagram ? (
+                  <code>{selection.preflight.violation.diagram}</code>
+                ) : null}
+              </p>
+            ) : null}
+
+            <div className="ticket__actions">
+              <button
+                type="button"
+                className="btn btn--paper"
+                disabled={busy || selection.selected.length === 0 || blockedByRule}
+                onClick={() => hold.mutate(selection.selected)}
+              >
+                Hold for {settings.holdMinutes} min
+              </button>
+              {selection.selected.length > 0 ? (
                 <button
-                  key={item.id}
                   type="button"
-                  className="showing"
-                  aria-pressed={item.id === screeningId}
-                  onClick={() => setScreeningId(item.id)}
+                  className="btn btn--paper-ghost"
+                  onClick={selection.clear}
+                  disabled={busy}
                 >
-                  <div className="showing__time">{formatShowtime(item.startsAt)}</div>
-                  <div className="showing__title">{item.movieTitle}</div>
+                  Clear
                 </button>
+              ) : null}
+            </div>
+          </div>
+
+          {liveHolds.length > 0 ? (
+            <div className="holds">
+              {liveHolds.map((reservation) => (
+                <HoldCard
+                  key={reservation.id}
+                  reservation={reservation}
+                  holdMinutes={settings.holdMinutes}
+                  onConfirm={confirm.mutate}
+                  onRelease={release.mutate}
+                  onExpire={handleExpire}
+                  busy={busy}
+                />
               ))}
             </div>
-
-            {loading && !seatMap ? (
-              <div className="center-note">
-                <div className="spinner" aria-hidden="true" />
-                <p>Reading the seat plan…</p>
-              </div>
-            ) : seatMap ? (
-              // Remounting per screening replays the entry animation exactly once.
-              <SeatMapView
-                key={screeningId}
-                seatMap={seatMap}
-                selected={new Set(selection.selected)}
-                onToggleSeat={selection.toggle}
-              />
-            ) : null}
-
-            {error ? (
-              <p className="tally" role="status">
-                {error} Retrying…
-              </p>
-            ) : null}
-          </section>
-
-          <aside className="rail">
-            <div className="stub ticket">
-              <p className="eyebrow">Your ticket</p>
-              <h2 className="ticket__film">{screening?.movieTitle ?? '—'}</h2>
-              <p className="ticket__meta">
-                {screening ? formatDay(screening.startsAt) : '—'} ·{' '}
-                {screening ? formatShowtime(screening.startsAt) : '—'}
-                <br />
-                {screening?.auditoriumName ?? '—'} · {screening?.movieDurationMinutes ?? '—'} min
-              </p>
-
-              <div className="ticket__tear" />
-
-              {selection.labels.length > 0 ? (
-                <>
-                  <p className="eyebrow">
-                    {selection.labels.length} seat{selection.labels.length > 1 ? 's' : ''} selected
-                  </p>
-                  <div className="ticket__seats">
-                    {selection.labels.map((label) => (
-                      <span key={label} className="seat-chip">
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <p className="ticket__empty">
-                  Pick a seat on the plan. Seats in one booking must sit side by side in the same
-                  row.
-                </p>
-              )}
-
-              {selection.preflight && !selection.preflight.ok ? (
-                <p className="ticket__notice" role="alert">
-                  {selection.preflight.violation.message}
-                  {selection.preflight.violation.diagram ? (
-                    <code>{selection.preflight.violation.diagram}</code>
-                  ) : null}
-                </p>
-              ) : null}
-
-              <div className="ticket__actions">
-                <button
-                  type="button"
-                  className="btn btn--paper"
-                  disabled={busy || selection.selected.length === 0 || blockedByRule}
-                  onClick={handleHold}
-                >
-                  Hold for {settings.holdMinutes} min
-                </button>
-                {selection.selected.length > 0 ? (
-                  <button
-                    type="button"
-                    className="btn btn--paper-ghost"
-                    onClick={selection.clear}
-                    disabled={busy}
-                  >
-                    Clear
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {liveHolds.length > 0 ? (
-              <div className="holds">
-                {liveHolds.map((reservation) => (
-                  <HoldCard
-                    key={reservation.id}
-                    reservation={reservation}
-                    holdMinutes={settings.holdMinutes}
-                    onConfirm={handleConfirm}
-                    onRelease={handleRelease}
-                    onExpire={handleExpire}
-                    busy={busy}
-                  />
-                ))}
-              </div>
-            ) : null}
-          </aside>
-        </main>
-      )}
+          ) : null}
+        </aside>
+      </main>
     </div>
   );
 }

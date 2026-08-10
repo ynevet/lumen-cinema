@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Reservation, SeatMap } from '@lumen/shared';
-import { ApiError, api } from '../api/client';
+import { api } from '../api/client';
 
 /** How often we re-read the map so other people's seats appear without a refresh. */
 const POLL_MS = 4000;
+
+export const seatMapKey = (screeningId: number | null) => ['seatMap', screeningId] as const;
+export const reservationsKey = (screeningId: number | null) =>
+  ['reservations', screeningId] as const;
 
 export interface SeatMapState {
   seatMap: SeatMap | null;
   reservations: Reservation[];
   loading: boolean;
-  error: string | null;
+  stale: boolean;
   /** Re-read immediately, e.g. straight after holding or confirming. */
   refresh: () => Promise<void>;
 }
@@ -17,66 +22,43 @@ export interface SeatMapState {
 /**
  * Keeps one screening's seat map and the viewer's own reservations current.
  *
- * Polls while the tab is visible and re-reads the moment it regains focus. Responses for a
- * screening the user has since navigated away from are discarded rather than applied.
+ * Polling, pausing in a background tab, refetching on focus, discarding responses for a
+ * screening the user has navigated away from, and de-duplicating in-flight requests are all
+ * React Query behaviour rather than code we maintain. Keying the queries by screening id is
+ * what makes the stale-response problem disappear: a late reply lands in the cache entry it
+ * belongs to and is simply not the one being rendered.
  */
 export function useSeatMap(screeningId: number | null): SeatMapState {
-  const [seatMap, setSeatMap] = useState<SeatMap | null>(null);
-  const [reservations, setReservations] = useState<Reservation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const enabled = screeningId !== null;
 
-  // Which screening the UI is actually showing, so late responses can be ignored.
-  const showing = useRef<number | null>(null);
-  showing.current = screeningId;
+  const seatMap = useQuery({
+    queryKey: seatMapKey(screeningId),
+    queryFn: () => api.seatMap(screeningId as number),
+    enabled,
+    refetchInterval: POLL_MS,
+  });
+
+  const reservations = useQuery({
+    queryKey: reservationsKey(screeningId),
+    queryFn: () => api.myReservations(screeningId as number).then((result) => result.reservations),
+    enabled,
+    refetchInterval: POLL_MS,
+  });
 
   const refresh = useCallback(async () => {
-    if (screeningId === null) return;
-    const [map, mine] = await Promise.all([
-      api.seatMap(screeningId),
-      api.myReservations(screeningId),
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: seatMapKey(screeningId) }),
+      queryClient.invalidateQueries({ queryKey: reservationsKey(screeningId) }),
     ]);
-    if (showing.current !== screeningId) return;
-    setSeatMap(map);
-    setReservations(mine.reservations);
-  }, [screeningId]);
+  }, [queryClient, screeningId]);
 
-  useEffect(() => {
-    if (screeningId === null) return;
-    let cancelled = false;
-
-    // `force` covers the first load and regaining focus, so a tab that starts in the
-    // background still fills in rather than spinning forever.
-    const tick = async (force = false): Promise<void> => {
-      if (document.hidden && !force) return;
-      try {
-        await refresh();
-        if (!cancelled) setError(null);
-      } catch (caught) {
-        // A 401 is handled globally by the auth context; anything else is worth surfacing.
-        if (!cancelled && caught instanceof ApiError && caught.status !== 401) {
-          setError('Lost contact with the box office.');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    setLoading(true);
-    void tick(true);
-
-    const onVisibilityChange = (): void => {
-      if (!document.hidden) void tick(true);
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    const timer = setInterval(() => void tick(), POLL_MS);
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [screeningId, refresh]);
-
-  return { seatMap, reservations, loading, error, refresh };
+  return {
+    seatMap: seatMap.data ?? null,
+    reservations: reservations.data ?? [],
+    loading: enabled && seatMap.isPending,
+    // Showing the last known map while retries run beats blanking the screen.
+    stale: seatMap.isError || reservations.isError,
+    refresh,
+  };
 }

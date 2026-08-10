@@ -35,8 +35,9 @@
   --danger: #e5604a;
   --ok: #63b98a;
 
-  --sans: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue',
-    Arial, sans-serif;
+  --sans:
+    'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial,
+    sans-serif;
   --mono: ui-monospace, 'Cascadia Code', 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
   --radius: 4px;
@@ -57,9 +58,7 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(120% 70% at 50% -10%, #241f33 0%, transparent 55%),
-    var(--house-deep);
+  background: radial-gradient(120% 70% at 50% -10%, #241f33 0%, transparent 55%), var(--house-deep);
   color: var(--text);
   font-family: var(--sans);
   font-size: 15px;
@@ -105,7 +104,10 @@ button {
   border-radius: var(--radius);
   font-weight: 600;
   font-size: 14px;
-  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
 }
 
 .btn:hover:not(:disabled) {
@@ -205,8 +207,8 @@ button {
   inset-block: 0;
   left: -7px;
   width: 14px;
-  background:
-    radial-gradient(circle at 7px 7px, transparent 6px, var(--stub) 6.5px) 0 0 / 14px 20px repeat-y;
+  background: radial-gradient(circle at 7px 7px, transparent 6px, var(--stub) 6.5px) 0 0 / 14px 20px
+    repeat-y;
   pointer-events: none;
 }
 
@@ -400,7 +402,9 @@ button {
   border: 1px solid var(--house-line);
   border-radius: var(--radius);
   background: var(--house);
-  transition: border-color 120ms ease, background 120ms ease;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
 }
 
 .showing:hover {
@@ -529,7 +533,10 @@ button {
   font-size: 10.5px;
   line-height: 1;
   color: transparent;
-  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease,
+  transition:
+    background 130ms ease,
+    border-color 130ms ease,
+    transform 130ms ease,
     box-shadow 130ms ease;
 }
 
