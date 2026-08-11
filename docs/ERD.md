@@ -55,7 +55,7 @@ erDiagram
         uuid               id PK
         int                user_id FK
         int                screening_id FK
-        reservation_status status "held | booked | expired | cancelled"
+        reservation_status status "held, booked, expired or cancelled"
         timestamptz        created_at
         timestamptz        expires_at   "created_at + 15 minutes"
         timestamptz        confirmed_at

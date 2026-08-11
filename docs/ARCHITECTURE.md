@@ -91,6 +91,7 @@ POST /api/screenings/:id/reservations  { seatIds: [42, 43] }
   ├─ zod                               shape of the payload
   └─ BEGIN
        ├─ load screening
+       ├─ has it already started?                            → 409 SCREENING_STARTED
        ├─ resolve seat ids → row/seat numbers, reject seats from another hall
        ├─ Rule 1a: all seats in one row                      → 422 MULTIPLE_ROWS
        ├─ pg_advisory_xact_lock(screening_id, row_index)     ← serialise this row
@@ -114,6 +115,40 @@ rejected; a pre-existing trap that the selection does not touch is not held agai
 Every worked example in the specification behaves as written, and the tests assert all
 three of them plus the pre-existing-gap case.
 
+## Selecting is not the same as holding
+
+Clicking seats builds a selection in the browser; the seats become unavailable to everybody
+else only when the user commits with **Hold for 15 min**. Two people can therefore have the
+same seat highlighted at once, and one of them will lose at the moment of submission.
+
+Locking each seat the instant it is clicked was the alternative, and it was rejected:
+
+- **Rule 2 is a property of a whole selection, not of one seat.** Someone building up
+  `5, 6, 7` passes through the intermediate state `5`, which may itself strand seat 4. Locking
+  per click means either validating states the user never intended to submit, or deferring
+  validation and holding seats the rules would ultimately refuse.
+- **It converts every idle browse into inventory.** A user who clicks a seat and wanders off
+  removes it from sale for 15 minutes. Committing explicitly means a hold represents someone
+  who actually wants the seats.
+- **It multiplies write traffic.** Each click becomes a lock, and each correction becomes a
+  release, on the row that is already the contention point.
+
+The cost is a window between clicking and committing in which the seats are not yet yours.
+That window is closed correctly rather than hidden: the seat map refreshes every four
+seconds, a seat taken from under a pending selection is dropped from it automatically, and if
+someone commits first the loser gets a `409` explaining exactly what happened.
+
+## A screening that has started cannot be sold
+
+`listScreenings` returns only screenings whose `starts_at` is still in the future, and
+`createHold` re-checks the same condition against the database clock inside the transaction.
+The first is a convenience for clients; the second is the enforcement. A rule that exists
+only in the read path is not a rule, merely a suggestion that well-behaved clients follow.
+
+Confirming an _existing_ hold is deliberately still allowed after the film starts: the seats
+were taken while they were on sale, and completing a purchase already in progress is the
+behaviour a customer expects.
+
 ## Writes carry their own preconditions
 
 `confirmHold` and `cancelHold` are single `UPDATE ... WHERE ... RETURNING` statements. Every
@@ -133,15 +168,15 @@ and then writes, and those two steps must be seen as one.
 
 Every non-2xx response is `{ error: { code, message, details? } }`.
 
-| Status | Meaning              | Examples                                            |
-| ------ | -------------------- | --------------------------------------------------- |
-| 400    | Malformed request    | `VALIDATION_FAILED`                                 |
-| 401    | Not signed in        | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`              |
-| 404    | Absent, or not yours | `RESERVATION_NOT_FOUND`                             |
-| 409    | You lost a race      | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED`                  |
-| 422    | You broke a rule     | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT` |
+| Status | Meaning              | Examples                                                |
+| ------ | -------------------- | ------------------------------------------------------- |
+| 400    | Malformed request    | `VALIDATION_FAILED`                                     |
+| 401    | Not signed in        | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`                  |
+| 404    | Absent, or not yours | `RESERVATION_NOT_FOUND`                                 |
+| 409    | The world moved on   | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED`, `SCREENING_STARTED` |
+| 422    | You broke a rule     | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT`     |
 
-The 409/422 split is deliberate: 409 means "try again, the world moved", 422 means "this
+The 409/422 split is deliberate: 409 means "the world moved, refresh and retry", 422 means "this
 selection is not allowed no matter when you send it". The client treats them differently —
 409 clears the selection and refreshes, 422 explains the rule.
 

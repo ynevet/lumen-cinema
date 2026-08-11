@@ -17,6 +17,7 @@ import { closePool, pool } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { ensureUpcomingScreenings, runSeed } from './db/seed.js';
 import { listScreenings } from './services/screeningService.js';
+import { releaseExpiredHolds } from './services/reservationService.js';
 
 let app: Express;
 let screeningId: number;
@@ -192,6 +193,38 @@ describe('selection rules over HTTP', () => {
     const response = await hold(bob, seatIds(await seatMap(bob), 'E', [1, 2])).expect(409);
     expect(response.body.error.code).toBe('SEAT_UNAVAILABLE');
   });
+
+  it('refuses to sell seats for a screening that has already started', async () => {
+    // Hiding a started screening from the list is a convenience; the write path has to
+    // enforce it, or the rule only exists for clients that bother to look.
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
+       SELECT m.id, a.id, now() - interval '3 hours' - make_interval(secs => $1::int)
+         FROM movies m CROSS JOIN auditoriums a
+        ORDER BY m.id, a.id
+        LIMIT 1
+       RETURNING id`,
+      [Math.floor(Math.random() * 100_000)],
+    );
+    const startedId = rows[0]!.id;
+
+    try {
+      const map = await request(app)
+        .get(`/api/screenings/${startedId}/seatmap`)
+        .set('authorization', `Bearer ${alice}`)
+        .expect(200);
+
+      const seat = (map.body as SeatMap).rows[0]!.seats[0]!.id;
+      const response = await request(app)
+        .post(`/api/screenings/${startedId}/reservations`)
+        .set('authorization', `Bearer ${alice}`)
+        .send({ seatIds: [seat] })
+        .expect(409);
+      expect(response.body.error.code).toBe('SCREENING_STARTED');
+    } finally {
+      await pool.query('DELETE FROM screenings WHERE id = $1', [startedId]);
+    }
+  });
 });
 
 describe('concurrency', () => {
@@ -271,10 +304,20 @@ describe('hold lifecycle', () => {
     await hold(bob, ids).expect(201);
 
     // The owner can no longer turn the lapsed hold into a booking.
-    await request(app)
+    const beforeSweep = await request(app)
       .post(`/api/reservations/${created.body.reservation.id}/confirm`)
       .set('authorization', `Bearer ${alice}`)
       .expect(409);
+    expect(beforeSweep.body.error.code).toBe('HOLD_EXPIRED');
+
+    // Same answer once the maintenance job has retired the row: the error a user sees
+    // must not depend on whether the sweeper happened to run first.
+    await releaseExpiredHolds();
+    const afterSweep = await request(app)
+      .post(`/api/reservations/${created.body.reservation.id}/confirm`)
+      .set('authorization', `Bearer ${alice}`)
+      .expect(409);
+    expect(afterSweep.body.error.code).toBe('HOLD_EXPIRED');
   });
 
   it('confirms a hold into a booking', async () => {

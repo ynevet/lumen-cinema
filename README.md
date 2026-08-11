@@ -297,8 +297,8 @@ TOKEN=$(curl -s localhost:4000/api/auth/login \
 curl -s localhost:4000/api/screenings -H "authorization: Bearer $TOKEN" | jq
 ```
 
-Errors are always `{ error: { code, message, details? } }`. **`409`** means you lost a race
-and should retry; **`422`** means the selection breaks a rule. Rule violations include a
+Errors are always `{ error: { code, message, details? } }`. **`409`** means the state of the
+world changed under you — refresh and try again; **`422`** means the selection breaks a rule. Rule violations include a
 `details.diagram` such as `# # . * * . . . . .`.
 
 ---

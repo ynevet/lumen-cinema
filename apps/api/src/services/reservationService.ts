@@ -131,6 +131,21 @@ export async function createHold(input: CreateHoldInput): Promise<Reservation> {
     return await withTransaction(async (tx) => {
       const screening = await getScreeningOrThrow(input.screeningId, tx);
 
+      // You cannot buy a seat at a film that has already begun. `listScreenings` stops
+      // offering it, but that is a read-path convenience - this is the enforcement.
+      // Compared against the database clock, not the API server's, so the two can never
+      // disagree about whether a showing has started.
+      const { rows: timing } = await tx.query<{ started: boolean }>(
+        `SELECT starts_at <= now() AS started FROM screenings WHERE id = $1`,
+        [input.screeningId],
+      );
+      if (timing[0]?.started) {
+        throw AppError.conflict(
+          'SCREENING_STARTED',
+          'This screening has already started. Please choose a later showtime.',
+        );
+      }
+
       // Resolve the requested seat ids to physical seats in this screening's hall.
       const { rows: requested } = await tx.query<{
         id: number;
@@ -256,8 +271,10 @@ export async function confirmHold(reservationId: string, userId: number): Promis
 
   const current = await loadOwnReservation(reservationId, userId);
   if (current.status === 'booked') return hydrateOne(current);
-  if (current.status === 'held') {
-    // Still 'held' but the UPDATE missed, so expiry is the only thing that blocked it.
+  // A lapsed hold reads as 'held' until the maintenance job retires it, and 'expired'
+  // afterwards. Both mean the same thing to the user, so both report the same code -
+  // otherwise the error would depend on whether the sweeper had happened to run yet.
+  if (current.status === 'held' || current.status === 'expired') {
     throw AppError.conflict('HOLD_EXPIRED', 'Your hold expired and the seats were released.');
   }
   throw AppError.conflict(
