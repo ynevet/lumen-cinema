@@ -94,39 +94,54 @@ async function seedMovies(tx: DbClient): Promise<number[]> {
 }
 
 /**
- * Schedules today's programme only when the hall has nothing showing in the next 24 hours.
- * Re-seeding is therefore a no-op on every restart, while a demo started at any time of day
- * - or left running past its last showing - always has bookable screenings.
+ * Schedules today's programme when the hall has nothing showing in the next 24 hours,
+ * and does nothing otherwise. Returns how many screenings it added.
+ *
+ * This runs at startup *and* periodically from the maintenance job, because showtimes go
+ * stale with the wall clock: seeding only at boot leaves a long-running container with an
+ * empty programme once its last showing has started. A real cinema schedules its own
+ * programme, so this is demo-data upkeep and is gated behind `RUN_SEED`.
  *
  * The window is deliberately 24 hours rather than "any future screening": the integration
- * tests create their own screening far in the future, and that must not suppress the seed.
+ * tests create their own screening far in the future, and that must not suppress it.
  */
-async function seedScreenings(
-  tx: DbClient,
-  auditoriumId: number,
-  movieIds: number[],
-): Promise<void> {
-  const { rows } = await tx.query<{ upcoming: number }>(
-    `SELECT count(*)::int AS upcoming
-       FROM screenings
-      WHERE auditorium_id = $1
-        AND starts_at > now()
-        AND starts_at < now() + interval '1 day'`,
-    [auditoriumId],
-  );
-  if ((rows[0]?.upcoming ?? 0) > 0) return;
-
-  for (const slot of SCREENING_SLOTS) {
-    const movieId = movieIds[slot.movieIndex];
-    if (movieId === undefined) continue;
-    await tx.query(
-      `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
-       VALUES ($1, $2, date_trunc('hour', now()) + interval '1 hour'
-                        + make_interval(mins => $3::int))
-       ON CONFLICT (auditorium_id, starts_at) DO NOTHING`,
-      [movieId, auditoriumId, slot.minutesFromNextHour],
+export async function ensureUpcomingScreenings(): Promise<number> {
+  return withTransaction(async (tx) => {
+    const { rows: halls } = await tx.query<{ id: number }>(
+      `SELECT id FROM auditoriums WHERE name = $1`,
+      [AUDITORIUM_NAME],
     );
-  }
+    const auditoriumId = halls[0]?.id;
+    if (auditoriumId === undefined) return 0;
+
+    const { rows: counts } = await tx.query<{ upcoming: number }>(
+      `SELECT count(*)::int AS upcoming
+         FROM screenings
+        WHERE auditorium_id = $1
+          AND starts_at > now()
+          AND starts_at < now() + interval '1 day'`,
+      [auditoriumId],
+    );
+    if ((counts[0]?.upcoming ?? 0) > 0) return 0;
+
+    const { rows: movies } = await tx.query<{ id: number }>(`SELECT id FROM movies ORDER BY id`);
+    if (movies.length === 0) return 0;
+
+    let scheduled = 0;
+    for (const slot of SCREENING_SLOTS) {
+      const movie = movies[slot.movieIndex % movies.length];
+      if (!movie) continue;
+      const { rowCount } = await tx.query(
+        `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
+         VALUES ($1, $2, date_trunc('hour', now()) + interval '1 hour'
+                          + make_interval(mins => $3::int))
+         ON CONFLICT (auditorium_id, starts_at) DO NOTHING`,
+        [movie.id, auditoriumId, slot.minutesFromNextHour],
+      );
+      scheduled += rowCount ?? 0;
+    }
+    return scheduled;
+  });
 }
 
 async function seedUsers(tx: DbClient): Promise<void> {
@@ -142,11 +157,13 @@ async function seedUsers(tx: DbClient): Promise<void> {
 
 export async function runSeed(): Promise<void> {
   await withTransaction(async (tx) => {
-    const auditoriumId = await seedAuditoriumAndSeats(tx);
-    const movieIds = await seedMovies(tx);
-    await seedScreenings(tx, auditoriumId, movieIds);
+    await seedAuditoriumAndSeats(tx);
+    await seedMovies(tx);
     await seedUsers(tx);
   });
+
+  // Needs the halls and films above to be committed first.
+  await ensureUpcomingScreenings();
 
   const { rows } = await pool.query<{ seats: number; screenings: number; users: number }>(
     `SELECT (SELECT count(*) FROM seats)      AS seats,

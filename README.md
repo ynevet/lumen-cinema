@@ -28,10 +28,10 @@ docker compose up --build
 
 Then open **<http://localhost:8080>**.
 
-The database schema is migrated and seeded automatically on first boot — no extra step. The
-seed schedules four showtimes starting from the next full hour, so there is always something
-bookable whenever you run it. The API is also published on <http://localhost:4000> if you
-want to poke at it directly.
+The database schema is migrated and seeded automatically on first boot — no extra step. Four
+showtimes are scheduled from the next full hour, and topped back up whenever the hall runs
+out, so there is always something bookable however long the stack has been running. The API
+is also published on <http://localhost:4000> if you want to poke at it directly.
 
 ```bash
 docker compose down     # stop, keep the data

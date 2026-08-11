@@ -4,7 +4,7 @@ import { logger } from './logger.js';
 import { closePool, waitForDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { runSeed } from './db/seed.js';
-import { startExpirySweeper } from './jobs/expirySweeper.js';
+import { startMaintenance } from './jobs/maintenance.js';
 
 async function main(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting cinema API');
@@ -13,14 +13,14 @@ async function main(): Promise<void> {
   if (config.RUN_MIGRATIONS) await runMigrations();
   if (config.RUN_SEED) await runSeed();
 
-  const stopSweeper = startExpirySweeper();
+  const stopMaintenance = startMaintenance();
   const server = createApp().listen(config.PORT, () => {
     logger.info({ port: config.PORT }, 'API listening');
   });
 
   const shutdown = (signal: string): void => {
     logger.info({ signal }, 'Shutting down');
-    stopSweeper();
+    stopMaintenance();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

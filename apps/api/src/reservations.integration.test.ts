@@ -15,7 +15,8 @@ import type { SeatMap } from '@lumen/shared';
 import { createApp } from './app.js';
 import { closePool, pool } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
-import { runSeed } from './db/seed.js';
+import { ensureUpcomingScreenings, runSeed } from './db/seed.js';
+import { listScreenings } from './services/screeningService.js';
 
 let app: Express;
 let screeningId: number;
@@ -99,6 +100,47 @@ describe('authentication', () => {
       .get(`/api/screenings/${screeningId}/seatmap`)
       .set('authorization', 'Bearer not.a.jwt')
       .expect(401);
+  });
+});
+
+describe('screening programme', () => {
+  it('offers only screenings that have not started', async () => {
+    const now = Date.now();
+    const offered = await listScreenings();
+    expect(offered.every((item) => new Date(item.startsAt).getTime() > now)).toBe(true);
+  });
+
+  it('tops the programme back up once every showing has started', async () => {
+    // Exactly what happens to a container left running past its last screening: age the
+    // whole programme into the past. Shifting keeps the times distinct, so the
+    // (auditorium, starts_at) uniqueness constraint still holds.
+    // Map each row to a distinct slot in the distant past, keyed by its id. That is
+    // collision-proof against the (auditorium, starts_at) constraint and idempotent, so
+    // re-running the suite against the same database behaves identically.
+    await pool.query(
+      `UPDATE screenings
+          SET starts_at = timestamptz '2000-01-01 00:00:00+00' + make_interval(mins => id)
+        WHERE starts_at > now() AND starts_at < now() + interval '1 day'`,
+    );
+
+    // This suite's own screening sits 400+ days out, so look only at the near programme.
+    const soon = async () => {
+      const horizon = Date.now() + 24 * 60 * 60 * 1000;
+      const offered = await listScreenings();
+      return offered.filter((item) => new Date(item.startsAt).getTime() < horizon);
+    };
+
+    expect(await soon()).toHaveLength(0);
+
+    const scheduled = await ensureUpcomingScreenings();
+    expect(scheduled).toBeGreaterThan(0);
+
+    const offered = await soon();
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered.every((item) => new Date(item.startsAt).getTime() > Date.now())).toBe(true);
+
+    // And it does not keep adding to an already-stocked programme.
+    expect(await ensureUpcomingScreenings()).toBe(0);
   });
 });
 

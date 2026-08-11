@@ -61,10 +61,17 @@ The seat-map query joins reservations with
 `(status = 'booked' OR (status = 'held' AND expires_at > now()))`. Expiry is therefore a
 property of every read, not the outcome of a job that might be stopped, lagging or crashed.
 
-`jobs/expirySweeper.ts` still runs every 15 seconds, but only to flip lapsed rows to
+`jobs/maintenance.ts` still runs every 15 seconds, but only to flip lapsed rows to
 `expired` so they drop out of the partial unique index and the seats become insertable again.
 If it stopped, users would still see correct seat states, and the in-transaction reap in
 `createHold` would still free seats on demand. Housekeeping, not mechanism.
+
+The same job keeps the screening programme stocked. Showtimes go stale with the wall clock,
+so seeding only at startup leaves a long-running container with nothing left to sell once its
+last showing has begun — the demo would look broken without anything actually being wrong.
+`ensureUpcomingScreenings` schedules a fresh programme whenever the hall has nothing in the
+next 24 hours. A real cinema schedules its own programme, so this is demo-data upkeep and is
+gated behind `RUN_SEED`.
 
 ### 3. The selection rules must be enforced server-side and feel instant
 
