@@ -30,7 +30,7 @@ literally the same code on both sides of the wire.
 
 ## The three problems worth solving
 
-Everything else in this project is CRUD. These three are not.
+Everything else here is ordinary CRUD. These three are not.
 
 ### 1. Two users must never get the same seat
 
@@ -104,14 +104,14 @@ POST /api/screenings/:id/reservations  { seatIds: [42, 43] }
 
 ## Interpreting Rule 2
 
-The brief says a selection "must not leave a single empty seat trapped between occupied
+The rule says a selection "must not leave a single empty seat trapped between occupied
 seats". Taken literally as a check on the resulting layout, a row that _already_ contains a
 trapped seat — which happens naturally when a hold expires or a booking is cancelled — would
 reject every subsequent selection in that row, making those seats permanently unsellable.
 
 So the implementation compares the row before and after: a trap the selection **creates** is
 rejected; a pre-existing trap that the selection does not touch is not held against the user.
-Every worked example in the specification behaves exactly as specified, and the tests assert all
+Every worked example in the specification behaves as written, and the tests assert all
 three of them plus the pre-existing-gap case.
 
 ## Writes carry their own preconditions
@@ -146,7 +146,7 @@ selection is not allowed no matter when you send it". The client treats them dif
 409 clears the selection and refreshes, 422 explains the rule.
 
 Rule violations carry a `details.diagram` such as `# # . * * . . . . .`, in the same notation
-the specification uses. It is rendered in the UI and asserted in tests.
+used throughout. It is rendered in the UI and asserted in tests.
 
 ## Dependencies: what we use, and what we deliberately wrote
 
@@ -189,7 +189,7 @@ Worth naming, since they were choices rather than oversights:
   user experience.
 - **No payment step.** "Complete a reservation" is modelled as `held → booked`. A payment
   provider would sit between them and change nothing structural.
-- **JWT in `localStorage`.** Simple and appropriate for this scale. Production would use
+- **JWT in `localStorage`.** Simple and appropriate at this scale. Production would use
   an httpOnly, SameSite cookie with a refresh token to remove the XSS token-theft surface.
 - **Rate limiting is in-memory.** Correct for a single instance; more than one replica needs
   a shared store (`rate-limit-redis`), which is a deployment decision rather than a code one.

@@ -11,7 +11,7 @@ PostgreSQL 17 · Docker Compose
 
 [Quick start](#quick-start) · [Using the app](#using-the-app) ·
 [See the concurrency guarantee](#see-the-concurrency-guarantee-for-yourself) ·
-[Requirements checklist](#requirements-checklist) · [Project layout](#project-layout) ·
+[What’s implemented](#whats-implemented) · [Project layout](#project-layout) ·
 [Local development](#local-development-without-docker) · [Tests](#tests) · [API](#api) ·
 [Configuration](#configuration) · [Troubleshooting](#troubleshooting)
 
@@ -125,8 +125,7 @@ runs the very same rule module on every click so the reason appears before you s
 > **Note on Rule 2.** A row can already contain a trapped seat before you touch anything —
 > holds expire and bookings get cancelled independently. Rejecting every later selection in
 > that row would make those seats permanently unsellable, so we reject only a trap your
-> selection **creates**. All three worked examples from the specification behave exactly as
-> specified. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#interpreting-rule-2).
+> selection **creates**. All three worked examples above behave exactly as written. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#interpreting-rule-2).
 
 ---
 
@@ -151,30 +150,24 @@ This is proven by tests as well as by hand — see [Tests](#tests).
 
 ---
 
-## Requirements checklist
+## What’s implemented
 
-Mapping the specification to the implementation:
+What the application does, and where each part lives:
 
-| Requirement                                 | Where                                                                                              |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Users must log in                           | `POST /auth/login`, JWT + bcrypt — [`authService.ts`](apps/api/src/services/authService.ts)        |
-| View the seating map                        | `GET /screenings/:id/seatmap` — [`screeningService.ts`](apps/api/src/services/screeningService.ts) |
-| Select one or more available seats          | Seat map UI — [`useSeatSelection.ts`](apps/web/src/hooks/useSeatSelection.ts)                      |
-| Complete a reservation                      | `POST /reservations/:id/confirm`                                                                   |
-| Seat status: Available / Reserved / Booked  | Derived from reservations, never stored — [`docs/ERD.md`](docs/ERD.md)                             |
-| 10 rows of 10 + 3 rows of 5                 | [`layout.ts`](packages/shared/src/layout.ts) — 115 seats, rows A–M                                 |
-| Selected seat becomes unavailable to others | Partial unique index on `(screening_id, seat_id)`                                                  |
-| Reservation held for 15 minutes             | `HOLD_MINUTES`, default 15                                                                         |
-| Expired reservations released automatically | Expiry is a property of every read; the maintenance job tidies up                                  |
-| No two users reserve the same seat          | Unique index + per-row advisory lock — [below](#how-double-booking-is-prevented)                   |
-| Rule 1 — consecutive seats, same row        | [`seatRules.ts`](packages/shared/src/seatRules.ts), validated server-side                          |
-| Rule 2 — no isolated empty seat             | Same module, same transaction                                                                      |
-| React front end                             | [`apps/web`](apps/web)                                                                             |
-| Node.js + TypeScript back end               | [`apps/api`](apps/api)                                                                             |
-| PostgreSQL                                  | Schema in [`001_init.sql`](apps/api/db/migrations/001_init.sql)                                    |
-| Docker setup for local execution            | [`docker-compose.yml`](docker-compose.yml)                                                         |
-| README with setup and run instructions      | This file                                                                                          |
-| ERD                                         | [`docs/ERD.md`](docs/ERD.md)                                                                       |
+| Capability                                                            | Where                                                                                    |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Email + password sign-in, JWT sessions                                | [`authService.ts`](apps/api/src/services/authService.ts)                                 |
+| Seating map with a live status for every seat                         | [`screeningService.ts`](apps/api/src/services/screeningService.ts)                       |
+| 115 seats — 10 rows of 10, 3 rows of 5                                | [`layout.ts`](packages/shared/src/layout.ts)                                             |
+| Seat status Available / Reserved / Booked, derived rather than stored | [`docs/ERD.md`](docs/ERD.md)                                                             |
+| Select consecutive seats, kept legal as you click                     | [`useSeatSelection.ts`](apps/web/src/hooks/useSeatSelection.ts)                          |
+| Rule 1 — consecutive seats in one row, enforced server-side           | [`seatRules.ts`](packages/shared/src/seatRules.ts)                                       |
+| Rule 2 — no isolated empty seat, enforced server-side                 | Same module, inside the reservation transaction                                          |
+| 15-minute hold, released automatically when it lapses                 | `HOLD_MINUTES`; expiry is a property of every read                                       |
+| Complete the reservation, or release the seats early                  | `POST /reservations/:id/confirm`, `DELETE /reservations/:id`                             |
+| Two users can never take the same seat                                | Partial unique index + per-row advisory lock — [below](#how-double-booking-is-prevented) |
+| Seat map stays current without a refresh                              | [`useSeatMap.ts`](apps/web/src/hooks/useSeatMap.ts) — TanStack Query polling             |
+| Sign-in rate limiting                                                 | [`rateLimit.ts`](apps/api/src/middleware/rateLimit.ts)                                   |
 
 ### How double booking is prevented
 
@@ -252,7 +245,7 @@ npm test
 ```
 
 - **24 unit tests** over the seat rules (`packages/shared`) — every worked example from the
-  brief, both 10-seat and 5-seat rows, edge seats, and the pre-existing-gap case. No
+  specification, both 10-seat and 5-seat rows, edge seats, and the pre-existing-gap case. No
   database needed.
 - **19 integration tests** against a real Postgres (`apps/api`) — the rules over HTTP,
   ownership, the 15-minute lifecycle, expiry actually freeing a seat, programme upkeep, and
@@ -375,15 +368,3 @@ docker compose down -v && docker compose up --build
 | Architecture and design decisions        | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                               |
 | Schema (authoritative)                   | [`apps/api/db/migrations/001_init.sql`](apps/api/db/migrations/001_init.sql) |
 | Seat rules (shared by client and server) | [`packages/shared/src/seatRules.ts`](packages/shared/src/seatRules.ts)       |
-
----
-
-## Notes on AI usage
-
-This solution was built with Claude (Claude Code). AI wrote the bulk of the code from a
-specification I set out; the architecture decisions — deriving seat status instead of storing
-it, using a partial unique index as the double-booking guard, choosing the cinema row as the
-advisory-lock granularity, and the reading of Rule 2 that does not punish a user for a
-pre-existing gap — were made deliberately and are documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), along with which libraries were adopted and
-which were deliberately declined. Every claim in this README is backed by a test that runs.

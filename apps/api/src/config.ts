@@ -28,7 +28,7 @@ const schema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   JWT_TTL_MINUTES: z.coerce.number().int().positive().default(720),
 
-  /** How long a hold survives before it is released. The assignment mandates 15. */
+  /** How long a hold survives before it is released. The product rule is 15 minutes. */
   HOLD_MINUTES: z.coerce.number().int().positive().default(15),
   MAX_SEATS_PER_RESERVATION: z.coerce.number().int().positive().max(20).default(10),
   /** Cadence of the background sweeper that flips expired holds to `expired`. */

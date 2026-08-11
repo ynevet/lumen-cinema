@@ -44,8 +44,8 @@ export interface SelectionViolation {
 export type SelectionResult = { ok: true } | { ok: false; violation: SelectionViolation };
 
 /**
- * A reservation may not be wider than the widest row. The brief's own "valid" example
- * takes 9 of 10 seats in one go, so anything lower would contradict the spec; the cap
+ * A reservation may not be wider than the widest row. The specification's own "valid" example
+ * takes 9 of 10 seats in one go, so anything lower would contradict it; the cap
  * exists only to stop absurd payloads, not to be a business rule of its own.
  */
 export const DEFAULT_MAX_SEATS_PER_RESERVATION = 10;
@@ -53,7 +53,7 @@ export const DEFAULT_MAX_SEATS_PER_RESERVATION = 10;
 /**
  * Seat numbers that sit alone in a gap of exactly one, with an occupied seat on
  * both sides. Seats 1 and `rowLength` can never qualify: they have a wall on one
- * side, which the specification explicitly allows.
+ * side, which the rules explicitly allow.
  */
 export function findTrappedSingles(occupied: ReadonlySet<number>, rowLength: number): number[] {
   const trapped: number[] = [];
@@ -67,7 +67,7 @@ export function findTrappedSingles(occupied: ReadonlySet<number>, rowLength: num
 
 /**
  * ASCII rendering of a row: `#` occupied, `*` selected, `.` empty.
- * Mirrors the notation used in the specification.
+ * Mirrors the notation used throughout the documentation.
  */
 export function renderRowDiagram(
   rowLength: number,

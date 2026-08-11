@@ -1,5 +1,5 @@
 /**
- * Physical layout of the cinema hall, as specified by the specification:
+ * Physical layout of the cinema hall:
  *   - 10 rows of 10 seats  (A .. J)
  *   -  3 rows of  5 seats  (K .. M)
  *

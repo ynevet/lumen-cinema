@@ -73,13 +73,13 @@ describe('rule 1 - consecutive seats in one row', () => {
 
 describe('rule 2 - no isolated empty seat between occupied seats', () => {
   // The three worked examples from the specification.
-  it('brief example 1: seats 1-2 booked, selecting 3-4 is valid', () => {
+  it('spec example 1: seats 1-2 booked, selecting 3-4 is valid', () => {
     const result = check([1, 2], [3, 4]);
     expect(result.ok).toBe(true);
     expect(renderRowDiagram(ROW, [1, 2], [3, 4])).toBe('# # * * . . . . . .');
   });
 
-  it('brief example 2: seats 1-2 booked, selecting 4-5 strands seat 3', () => {
+  it('spec example 2: seats 1-2 booked, selecting 4-5 strands seat 3', () => {
     const result = check([1, 2], [4, 5]);
     expect(codeOf(result)).toBe('ISOLATED_SEAT');
     if (!result.ok) {
@@ -88,7 +88,7 @@ describe('rule 2 - no isolated empty seat between occupied seats', () => {
     }
   });
 
-  it('brief example 3: empty row, selecting 2-10 leaves seat 1 at the edge (allowed)', () => {
+  it('spec example 3: empty row, selecting 2-10 leaves seat 1 at the edge (allowed)', () => {
     expect(check([], [2, 3, 4, 5, 6, 7, 8, 9, 10], ROW).ok).toBe(true);
   });
 
