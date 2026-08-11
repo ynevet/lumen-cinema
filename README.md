@@ -7,15 +7,11 @@ seat-selection rules are enforced on the server.
 **Stack:** React 19 + Vite + TanStack Query · Node.js + TypeScript + Express 5 ·
 PostgreSQL 17 · Docker Compose
 
-<sub>
-
 [Quick start](#quick-start) · [Using the app](#using-the-app) ·
-[See the concurrency guarantee](#see-the-concurrency-guarantee-for-yourself) ·
+[Concurrency guarantee](#see-the-concurrency-guarantee-for-yourself) ·
 [What’s implemented](#whats-implemented) · [Project layout](#project-layout) ·
 [Local development](#local-development-without-docker) · [Tests](#tests) · [API](#api) ·
 [Configuration](#configuration) · [Troubleshooting](#troubleshooting)
-
-</sub>
 
 ---
 
