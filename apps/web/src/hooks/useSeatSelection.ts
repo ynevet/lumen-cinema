@@ -1,130 +1,181 @@
 import { useCallback, useMemo, useState } from 'react';
-import type { SeatMap, SeatMapRow, SeatView } from '@lumen/shared';
-import { validateSeatSelection, type SelectionResult } from '@lumen/shared';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { Reservation, SeatView } from '@lumen/shared';
+import { api } from '../api/client';
+import { reservationsKey } from './useSeatMap';
 
 export interface SeatSelection {
-  /** Seat ids the user has picked but not yet submitted. */
-  selected: number[];
+  /** Seat ids in the hold, for the seat map. */
+  seatIds: ReadonlySet<number>;
   /** Human labels such as `A3`, in seat order. */
   labels: string[];
-  /**
-   * The same rules the API enforces, run against the pending selection. `null` when
-   * nothing is selected. The server still has the final word - this only saves the
-   * user a rejected round-trip.
-   */
-  preflight: SelectionResult | null;
+  /** The row the selection lives in, or `null` when nothing is selected. */
+  rowLabel: string | null;
+  /** A seat in another row, waiting for the user to agree to start again there. */
+  pendingSwitch: SeatView | null;
+  /** The seat whose click is still in flight, so the map can show it is working. */
+  pendingSeatId: number | null;
+  /** True while a click is in flight; further clicks are ignored until it lands. */
+  busy: boolean;
   toggle: (seat: SeatView) => void;
-  clear: () => void;
+  /** Release the current row and begin a new selection at `pendingSwitch`. */
+  confirmSwitch: () => void;
+  cancelSwitch: () => void;
 }
 
-interface SelectionState {
-  /** The screening the ids belong to. Seat ids are per-hall, so this must be checked. */
+interface Options {
   screeningId: number | null;
-  seatIds: number[];
-}
-
-function seatNumbers(ids: readonly number[], index: Map<number, SeatView>): number[] {
-  return ids
-    .map((id) => index.get(id)?.seatNumber)
-    .filter((number): number is number => number !== undefined)
-    .sort((a, b) => a - b);
-}
-
-function isContiguous(numbers: readonly number[]): boolean {
-  if (numbers.length === 0) return true;
-  return numbers[numbers.length - 1]! - numbers[0]! + 1 === numbers.length;
+  /** The viewer's live holds and bookings for this screening. */
+  reservations: Reservation[];
+  refresh: () => Promise<void>;
+  onError: (error: unknown) => void;
 }
 
 /**
- * Owns the pending seat selection and keeps it legal by construction: one row, always
- * contiguous. Clicking somewhere that cannot extend the current run starts a new one,
- * which is less irritating than an error message for something we can simply fix.
+ * Seats are reserved the instant they are clicked, so there is no such thing as a local,
+ * unsubmitted selection any more: the selection *is* a hold on the server, and this hook
+ * is the thing that edits it one seat at a time.
  *
- * Both ways a selection can go stale - switching screening, and somebody else taking a
- * seat we had pencilled in - are resolved by *deriving* the effective selection during
- * render rather than by effects that write state. No extra render pass, and no window in
- * which the rest of the UI can observe a selection that is no longer valid.
+ * Nothing about the selection is stored in React state - it is derived from the
+ * reservations the server reports, so what is drawn is always what is actually held.
+ * The rules are no longer mirrored here either: every click is a round trip that the API
+ * validates under its row lock, and the error it returns is what the user is shown. A
+ * second copy of the rules on the client could only ever disagree with it.
+ *
+ * The one piece of local state is `pendingSwitch`, which is a question being asked rather
+ * than a fact about the world: a reservation lives in exactly one row, so clicking into a
+ * different row means giving the current seats up, and that is the user's call to make.
  */
-export function useSeatSelection(
-  seatMap: SeatMap | null,
-  screeningId: number | null,
-  maxSeats: number,
-): SeatSelection {
-  const [state, setState] = useState<SelectionState>({ screeningId, seatIds: [] });
+export function useSeatSelection({
+  screeningId,
+  reservations,
+  refresh,
+  onError,
+}: Options): SeatSelection {
+  const queryClient = useQueryClient();
+  // Tagged with the screening it was asked about, so navigating away drops the question.
+  const [asked, setAsked] = useState<{ screeningId: number; seat: SeatView } | null>(null);
 
-  const seats = useMemo(() => {
-    const index = new Map<number, SeatView>();
-    const rows = new Map<number, SeatMapRow>();
-    for (const row of seatMap?.rows ?? []) {
-      for (const seat of row.seats) {
-        index.set(seat.id, seat);
-        rows.set(seat.id, row);
-      }
-    }
-    return { index, rows };
-  }, [seatMap]);
+  // The newest live hold is the selection in progress. Older ones are previous selections
+  // the user chose to keep - they keep their own countdowns and their own Confirm button.
+  const hold = useMemo(() => {
+    const live = reservations.filter(
+      (item) => item.status === 'held' && item.screeningId === screeningId,
+    );
+    return live.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+  }, [reservations, screeningId]);
 
-  const selected = useMemo(() => {
-    // A selection made for another showtime does not carry over.
-    if (state.screeningId !== screeningId) return [];
-    // Drop seats somebody else has taken since. If losing one would split the run, drop
-    // the lot rather than leave the user holding something the rules will reject.
-    const kept = state.seatIds.filter((id) => seats.index.get(id)?.status === 'available');
-    if (kept.length === state.seatIds.length) return state.seatIds;
-    return isContiguous(seatNumbers(kept, seats.index)) ? kept : [];
-  }, [state, screeningId, seats]);
+  const seatIds = useMemo(() => new Set((hold?.seats ?? []).map((seat) => seat.seatId)), [hold]);
+
+  const labels = useMemo(
+    () => (hold?.seats ?? []).map((seat) => `${seat.rowLabel}${seat.seatNumber}`),
+    [hold],
+  );
+
+  const rowLabel = hold?.seats[0]?.rowLabel ?? null;
+
+  /**
+   * Write the server's answer straight into the cache so the seat reacts to the click
+   * without waiting for the poll, then re-read the map for everything else that moved.
+   */
+  const applyReservation = useCallback(
+    async ({ reservation }: { reservation: Reservation }) => {
+      queryClient.setQueryData<Reservation[]>(reservationsKey(screeningId), (previous = []) => {
+        const others = previous.filter((item) => item.id !== reservation.id);
+        const stillLive = reservation.status === 'held' || reservation.status === 'booked';
+        return stillLive ? [reservation, ...others] : others;
+      });
+      await refresh();
+    },
+    [queryClient, refresh, screeningId],
+  );
+
+  const select = useMutation({
+    mutationFn: (seatId: number) =>
+      hold ? api.addSeat(hold.id, seatId) : api.hold(screeningId as number, [seatId]),
+    onSuccess: applyReservation,
+    onError,
+  });
+
+  const deselect = useMutation({
+    mutationFn: ({ reservationId, seatId }: { reservationId: string; seatId: number }) =>
+      api.removeSeat(reservationId, seatId),
+    onSuccess: applyReservation,
+    onError,
+  });
+
+  // Take the new row before giving up the old one. The other order reads more naturally
+  // but fails badly: if somebody wins the race for the new seat in between, the user has
+  // surrendered their row and gained nothing. This way the worst case is briefly holding
+  // two rows, which is visible on screen and can be undone.
+  const switchRow = useMutation({
+    mutationFn: async ({ reservationId, seatId }: { reservationId: string; seatId: number }) => {
+      const opened = await api.hold(screeningId as number, [seatId]);
+      await api.release(reservationId);
+      return opened;
+    },
+    onSuccess: applyReservation,
+    onError,
+    // Half of this can succeed, so re-read either way rather than only on the happy path.
+    onSettled: async () => {
+      setAsked(null);
+      await refresh();
+    },
+  });
+
+  const busy = select.isPending || deselect.isPending || switchRow.isPending;
+
+  // Which seat the round trip is about. Taken from the mutation's own variables rather
+  // than tracked separately, so it cannot survive the request it belongs to.
+  let pendingSeatId: number | null = null;
+  if (select.isPending) pendingSeatId = select.variables ?? null;
+  else if (deselect.isPending) pendingSeatId = deselect.variables?.seatId ?? null;
+  else if (switchRow.isPending) pendingSeatId = switchRow.variables?.seatId ?? null;
+
+  // Only a live question deserves an answer: one asked about another screening, or about
+  // a row the user has since given up anyway, quietly stops applying.
+  const pendingSwitch =
+    asked &&
+    asked.screeningId === screeningId &&
+    rowLabel !== null &&
+    asked.seat.rowLabel !== rowLabel
+      ? asked.seat
+      : null;
 
   const toggle = useCallback(
     (seat: SeatView) => {
-      const numbers = seatNumbers(selected, seats.index);
-      const only = (id: number): SelectionState => ({ screeningId, seatIds: [id] });
+      if (busy || screeningId === null) return;
+      setAsked(null);
 
-      if (selected.includes(seat.id)) {
-        const isEndpoint =
-          seat.seatNumber === numbers[0] || seat.seatNumber === numbers[numbers.length - 1];
-        // Removing from the middle would split the run - restart from here instead.
-        setState(
-          isEndpoint
-            ? { screeningId, seatIds: selected.filter((id) => id !== seat.id) }
-            : only(seat.id),
-        );
+      if (hold && seatIds.has(seat.id)) {
+        deselect.mutate({ reservationId: hold.id, seatId: seat.id });
         return;
       }
-
-      if (selected.length === 0 || selected.length >= maxSeats) {
-        setState(only(seat.id));
+      if (hold && rowLabel !== null && seat.rowLabel !== rowLabel) {
+        setAsked({ screeningId, seat });
         return;
       }
-      if (seats.rows.get(selected[0]!)?.label !== seat.rowLabel) {
-        setState(only(seat.id));
-        return;
-      }
-
-      const extendsRun =
-        seat.seatNumber === numbers[0]! - 1 || seat.seatNumber === numbers[numbers.length - 1]! + 1;
-      setState(extendsRun ? { screeningId, seatIds: [...selected, seat.id] } : only(seat.id));
+      select.mutate(seat.id);
     },
-    [selected, seats, screeningId, maxSeats],
+    [busy, screeningId, seatIds, hold, rowLabel, select, deselect],
   );
 
-  const row = selected[0] === undefined ? null : (seats.rows.get(selected[0]) ?? null);
+  const confirmSwitch = useCallback(() => {
+    if (!pendingSwitch || !hold) return;
+    switchRow.mutate({ reservationId: hold.id, seatId: pendingSwitch.id });
+  }, [pendingSwitch, hold, switchRow]);
 
-  const preflight = useMemo(() => {
-    if (selected.length === 0 || !row) return null;
-    return validateSeatSelection({
-      rowLength: row.seatCount,
-      occupied: row.seats.filter((s) => s.status !== 'available').map((s) => s.seatNumber),
-      selected: seatNumbers(selected, seats.index),
-      maxSeatsPerReservation: maxSeats,
-    });
-  }, [selected, row, seats, maxSeats]);
+  const cancelSwitch = useCallback(() => setAsked(null), []);
 
-  const labels = useMemo(
-    () => (row ? seatNumbers(selected, seats.index).map((n) => `${row.label}${n}`) : []),
-    [selected, row, seats],
-  );
-
-  const clear = useCallback(() => setState({ screeningId, seatIds: [] }), [screeningId]);
-
-  return { selected, labels, preflight, toggle, clear };
+  return {
+    seatIds,
+    labels,
+    rowLabel,
+    pendingSwitch,
+    pendingSeatId,
+    busy,
+    toggle,
+    confirmSwitch,
+    cancelSwitch,
+  };
 }

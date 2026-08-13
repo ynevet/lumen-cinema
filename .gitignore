@@ -22,3 +22,9 @@ Thumbs.db
 .idea/
 
 .vite/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+.playwright/

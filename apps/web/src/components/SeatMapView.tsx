@@ -2,28 +2,38 @@ import type { SeatMap, SeatView } from '@lumen/shared';
 
 interface Props {
   seatMap: SeatMap;
-  /** Seat ids in the pending (not yet submitted) selection. */
+  /** Seat ids the viewer currently holds - their live selection. */
   selected: ReadonlySet<number>;
+  /** The seat whose click has not come back yet, if any. */
+  pendingSeatId: number | null;
   onToggleSeat: (seat: SeatView) => void;
 }
 
-function seatClass(seat: SeatView, isSelected: boolean): string {
-  if (isSelected) return 'seat seat--selected';
-  if (seat.mine) return seat.status === 'booked' ? 'seat seat--mine-booked' : 'seat seat--mine';
-  if (seat.status === 'booked') return 'seat seat--booked';
-  if (seat.status === 'reserved') return 'seat seat--reserved';
-  return 'seat seat--available';
+function seatClass(seat: SeatView, isSelected: boolean, isPending: boolean): string {
+  const state = isSelected
+    ? 'seat--selected'
+    : seat.mine
+      ? seat.status === 'booked'
+        ? 'seat--mine-booked'
+        : 'seat--mine'
+      : seat.status === 'booked'
+        ? 'seat--booked'
+        : seat.status === 'reserved'
+          ? 'seat--reserved'
+          : 'seat--available';
+  return `seat ${state}${isPending ? ' seat--pending' : ''}`;
 }
 
-function seatLabel(seat: SeatView, isSelected: boolean): string {
+function seatLabel(seat: SeatView, isSelected: boolean, isPending: boolean): string {
   const id = `${seat.rowLabel}${seat.seatNumber}`;
+  if (isPending) return `${id}, working…`;
   if (isSelected) return `${id}, in your selection. Click to remove.`;
   if (seat.mine) return `${id}, ${seat.status === 'booked' ? 'booked by you' : 'held by you'}`;
   if (seat.status === 'available') return `${id}, available. Click to select.`;
   return `${id}, ${seat.status}`;
 }
 
-export function SeatMapView({ seatMap, selected, onToggleSeat }: Props) {
+export function SeatMapView({ seatMap, selected, pendingSeatId, onToggleSeat }: Props) {
   return (
     <div className="auditorium">
       <div className="screen">
@@ -50,14 +60,16 @@ export function SeatMapView({ seatMap, selected, onToggleSeat }: Props) {
 
             {row.seats.map((seat) => {
               const isSelected = selected.has(seat.id);
-              const selectable = seat.status === 'available' || isSelected;
+              const isPending = seat.id === pendingSeatId;
+              const selectable = (seat.status === 'available' || isSelected) && !isPending;
               return (
                 <button
                   key={seat.id}
                   type="button"
-                  className={seatClass(seat, isSelected)}
+                  className={seatClass(seat, isSelected, isPending)}
                   aria-pressed={isSelected}
-                  aria-label={seatLabel(seat, isSelected)}
+                  aria-busy={isPending || undefined}
+                  aria-label={seatLabel(seat, isSelected, isPending)}
                   disabled={!selectable}
                   onClick={() => onToggleSeat(seat)}
                 >

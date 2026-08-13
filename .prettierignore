@@ -4,5 +4,10 @@ coverage/
 package-lock.json
 *.tsbuildinfo
 
+# Playwright's own output, and local editor/agent settings.
+playwright-report/
+test-results/
+.claude/
+
 # Hand-aligned for readability; Prettier does not format SQL anyway.
 apps/api/db/migrations/

@@ -94,6 +94,17 @@ export const api = {
       seatIds,
     }),
 
+  addSeat: (reservationId: string, seatId: number) =>
+    request<{ reservation: Reservation }>('POST', `/reservations/${reservationId}/seats`, {
+      seatId,
+    }),
+
+  removeSeat: (reservationId: string, seatId: number) =>
+    request<{ reservation: Reservation }>(
+      'DELETE',
+      `/reservations/${reservationId}/seats/${seatId}`,
+    ),
+
   confirm: (reservationId: string) =>
     request<{ reservation: Reservation }>('POST', `/reservations/${reservationId}/confirm`),
 
