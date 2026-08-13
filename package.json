@@ -15,6 +15,7 @@
     "build": "npm run build -w @lumen/shared && npm run build -w @lumen/api && npm run build -w @lumen/web",
     "dev": "npm run build -w @lumen/shared && concurrently -n api,web -c cyan,magenta \"npm run dev -w @lumen/api\" \"npm run dev -w @lumen/web\"",
     "test": "npm run build -w @lumen/shared && npm run test -w @lumen/shared && npm run test -w @lumen/api",
+    "test:e2e": "npm run build -w @lumen/shared && playwright test",
     "typecheck": "npm run build -w @lumen/shared && tsc -b apps/api apps/web --pretty",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
     "concurrently": "^9.1.2",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",

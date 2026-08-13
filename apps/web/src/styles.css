@@ -604,6 +604,31 @@ button {
   cursor: not-allowed;
 }
 
+/* A click that is still with the server. Held at the size it will settle into, so the seat
+   does not jump when the answer arrives - only the pulse says it is working. */
+.seat--pending {
+  cursor: progress;
+  animation: seat-working 900ms ease-in-out infinite;
+}
+
+@keyframes seat-working {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat--pending {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 /* Seat number appears on hover / selection only - 115 numbers at once is noise. */
 .seat__num {
   position: absolute;
@@ -788,6 +813,17 @@ button {
   border-left: 3px solid var(--velvet);
   background: #f6e3e3;
   color: #7a2438;
+}
+
+/* A question rather than a complaint, so it drops the alarm colours. */
+.ticket__notice--ask {
+  border-left-color: var(--stub-ink);
+  background: var(--stub-shade);
+  color: #4a4234;
+}
+
+.ticket__notice--ask .ticket__actions {
+  margin-top: 10px;
 }
 
 .ticket__notice code {

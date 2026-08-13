@@ -48,7 +48,6 @@ export function BookingPage() {
   const screeningId = chosenId ?? screenings[0]?.id ?? null;
 
   const { seatMap, reservations, loading, stale, refresh } = useSeatMap(screeningId);
-  const selection = useSeatSelection(seatMap, screeningId, settings.maxSeatsPerReservation);
 
   const reportFailure = useCallback(
     async (error: unknown) => {
@@ -61,16 +60,10 @@ export function BookingPage() {
     [refresh, toast],
   );
 
-  const hold = useMutation({
-    mutationFn: (seatIds: number[]) => api.hold(screeningId as number, seatIds),
-    onSuccess: async ({ reservation }) => {
-      selection.clear();
-      await refresh();
-      toast.push({
-        tone: 'success',
-        message: `Holding ${seatList(reservation.seats)} for ${settings.holdMinutes} minutes.`,
-      });
-    },
+  const selection = useSeatSelection({
+    screeningId,
+    reservations,
+    refresh,
     onError: reportFailure,
   });
 
@@ -100,9 +93,8 @@ export function BookingPage() {
     void refresh();
   }, [refresh, toast]);
 
-  const busy = hold.isPending || confirm.isPending || release.isPending;
+  const busy = selection.busy || confirm.isPending || release.isPending;
   const screening = seatMap?.screening;
-  const blockedByRule = selection.preflight !== null && !selection.preflight.ok;
 
   // The server already returns only live holds and bookings (`?active=true`). A hold that
   // lapses between polls is handled by its own countdown, which disables Confirm at zero
@@ -173,7 +165,8 @@ export function BookingPage() {
             <SeatMapView
               key={screeningId}
               seatMap={seatMap}
-              selected={new Set(selection.selected)}
+              selected={selection.seatIds}
+              pendingSeatId={selection.pendingSeatId}
               onToggleSeat={selection.toggle}
             />
           ) : null}
@@ -198,54 +191,59 @@ export function BookingPage() {
 
             <div className="ticket__tear" />
 
-            {selection.labels.length > 0 ? (
-              <>
-                <p className="eyebrow">
-                  {selection.labels.length} seat{selection.labels.length > 1 ? 's' : ''} selected
-                </p>
-                <div className="ticket__seats">
-                  {selection.labels.map((label) => (
-                    <span key={label} className="seat-chip">
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              </>
+            {selection.labels.length === 0 ? (
+              <p className="ticket__empty">
+                Pick a seat on the plan - it is reserved for you the moment you click it, and held
+                for {settings.holdMinutes} minutes. Seats in one booking must sit side by side in
+                the same row.
+              </p>
             ) : (
               <p className="ticket__empty">
-                Pick a seat on the plan. Seats in one booking must sit side by side in the same row.
+                Row {selection.rowLabel} · {selection.labels.length} seat
+                {selection.labels.length > 1 ? 's' : ''} reserved for you. Click a seat again to
+                give it back.
               </p>
             )}
 
-            {selection.preflight && !selection.preflight.ok ? (
-              <p className="ticket__notice" role="alert">
-                {selection.preflight.violation.message}
-                {selection.preflight.violation.diagram ? (
-                  <code>{selection.preflight.violation.diagram}</code>
-                ) : null}
-              </p>
-            ) : null}
-
-            <div className="ticket__actions">
-              <button
-                type="button"
-                className="btn btn--paper"
-                disabled={busy || selection.selected.length === 0 || blockedByRule}
-                onClick={() => hold.mutate(selection.selected)}
+            {/* A question with two answers, so it is a dialog rather than an alert: a live
+                region is announced and left behind, which is no use when the buttons that
+                resolve it are inside. Focus moves to the default answer instead. */}
+            {selection.pendingSwitch ? (
+              <div
+                className="ticket__notice ticket__notice--ask"
+                role="alertdialog"
+                aria-modal="false"
+                aria-labelledby="row-switch-question"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') selection.cancelSwitch();
+                }}
               >
-                Hold for {settings.holdMinutes} min
-              </button>
-              {selection.selected.length > 0 ? (
-                <button
-                  type="button"
-                  className="btn btn--paper-ghost"
-                  onClick={selection.clear}
-                  disabled={busy}
-                >
-                  Clear
-                </button>
-              ) : null}
-            </div>
+                <span id="row-switch-question">
+                  A booking is one row at a time. Give {selection.rowLabel} back and start again at{' '}
+                  {selection.pendingSwitch.rowLabel}
+                  {selection.pendingSwitch.seatNumber}?
+                </span>
+                <div className="ticket__actions">
+                  <button
+                    type="button"
+                    className="btn btn--paper"
+                    disabled={busy}
+                    onClick={selection.confirmSwitch}
+                    autoFocus
+                  >
+                    Switch rows
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--paper-ghost"
+                    disabled={busy}
+                    onClick={selection.cancelSwitch}
+                  >
+                    Keep row {selection.rowLabel}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {liveHolds.length > 0 ? (

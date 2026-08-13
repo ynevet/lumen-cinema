@@ -63,7 +63,7 @@ export async function getScreeningOrThrow(
   return toScreening(row);
 }
 
-interface SeatRow {
+export interface SeatRow {
   id: number;
   row_label: string;
   row_index: number;

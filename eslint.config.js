@@ -14,7 +14,7 @@ export default defineConfig([
 
   {
     // Server-side workspaces.
-    files: ['apps/api/**/*.ts', 'packages/shared/**/*.ts', '*.config.ts'],
+    files: ['apps/api/**/*.ts', 'packages/shared/**/*.ts', 'e2e/**/*.ts', '*.config.ts'],
     languageOptions: { globals: globals.node },
   },
 
@@ -50,7 +50,7 @@ export default defineConfig([
 
   {
     // Tests may lean on non-null assertions and fixtures more freely.
-    files: ['**/*.test.ts', '**/*.test.tsx'],
+    files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts'],
     rules: { '@typescript-eslint/no-explicit-any': 'off' },
   },
 

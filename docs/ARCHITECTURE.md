@@ -10,8 +10,9 @@ lumen-cinema/
 │   ├── src/services/       the domain work
 │   └── db/migrations/      versioned SQL, applied at startup
 ├── apps/web/               @lumen/web    - React 19 + Vite
-│   ├── src/hooks/          useSeatMap (polling), useSeatSelection (rules)
+│   ├── src/hooks/          useSeatMap (polling), useSeatSelection (editing the live hold)
 │   └── src/components/     rendering
+├── e2e/                    Playwright, driving the browser against the real stack
 ├── docs/                   ERD, this document
 └── docker-compose.yml      db + api + web
 ```
@@ -20,9 +21,10 @@ Three layers on the server (route → service → SQL) and no more. There is no 
 DAO layer: it would only forward calls, and the queries here are the interesting part of the
 design rather than an implementation detail worth hiding.
 
-On the client, the two mechanisms that carry state — polling the seat map, and the selection
-state machine — live in hooks so each is small enough to reason about, leaving the component
-to render.
+On the client, the two mechanisms that carry state — polling the seat map, and editing the
+live hold — live in hooks so each is small enough to reason about, leaving the component to
+render. Neither keeps a private copy of the selection: it is derived from the reservations
+the server reports, so what is drawn is always what is actually held.
 
 npm workspaces, one lockfile, one TypeScript project graph. `@lumen/shared` is a real
 package rather than a folder of copied files, which is what allows the seat rules to be
@@ -73,19 +75,20 @@ last showing has begun — the demo would look broken without anything actually 
 next 24 hours. A real cinema schedules its own programme, so this is demo-data upkeep and is
 gated behind `RUN_SEED`.
 
-### 3. The selection rules must be enforced server-side and feel instant
+### 3. The selection rules must be enforced server-side
 
 `packages/shared/src/seatRules.ts` is a pure function over one row. The API calls it inside
 the reservation transaction, under the row lock, against freshly read state — that is the
-authoritative check. The web client calls the same function on every click to disable the
-Hold button and explain why, so the user never submits something that will be refused.
+authoritative check, and since every click is a round trip it is also the only one. The
+client does not second-guess it: the reason it shows the user is the reason the server gave.
 
-There is no second implementation to keep in sync, and the client's copy has no authority.
+The module stays in `packages/shared` because it is the vocabulary both sides speak, but
+there is only one caller with authority.
 
-## Request flow for a hold
+## Request flow for the first seat
 
 ```
-POST /api/screenings/:id/reservations  { seatIds: [42, 43] }
+POST /api/screenings/:id/reservations  { seatIds: [42] }
   │
   ├─ requireAuth                       verify JWT
   ├─ zod                               shape of the payload
@@ -103,6 +106,29 @@ POST /api/screenings/:id/reservations  { seatIds: [42, 43] }
      COMMIT
 ```
 
+## Request flow for every seat after it
+
+```
+POST /api/reservations/:id/seats  { seatId: 43 }        (DELETE .../seats/43 mirrors it)
+  │
+  └─ BEGIN
+       ├─ SELECT the reservation FOR UPDATE                  ← serialise this customer's
+       │    ├─ not yours?                          → 404       own rapid clicks
+       │    ├─ booked / cancelled?                 → 409
+       │    └─ lapsed, by the database clock?      → 409 HOLD_EXPIRED
+       ├─ load the seats it already holds
+       ├─ same row as those?                                 → 422 MULTIPLE_ROWS
+       ├─ pg_advisory_xact_lock(screening_id, row_index)
+       ├─ reap holds in this screening whose time has passed
+       ├─ read the row, discounting this reservation's own seats
+       ├─ validateSeatSelection(existing + new)               → 422 / 409
+       └─ INSERT one reservation_seats row                    → 23505 becomes 409
+     COMMIT                                                     expires_at is never touched
+```
+
+Both locks are always taken in that order — the reservation row first, the advisory lock
+second — so the two paths cannot form a deadlock cycle.
+
 ## Interpreting Rule 2
 
 The rule says a selection "must not leave a single empty seat trapped between occupied
@@ -115,28 +141,50 @@ rejected; a pre-existing trap that the selection does not touch is not held agai
 Every worked example in the specification behaves as written, and the tests assert all
 three of them plus the pre-existing-gap case.
 
-## Selecting is not the same as holding
+## Selecting _is_ holding
 
-Clicking seats builds a selection in the browser; the seats become unavailable to everybody
-else only when the user commits with **Hold for 15 min**. Two people can therefore have the
-same seat highlighted at once, and one of them will lose at the moment of submission.
+A seat becomes Reserved on the click that selects it. There is no pending, browser-only
+selection and no commit step: the selection **is** a hold, and the client edits it one seat
+at a time through `POST /reservations/:id/seats` and `DELETE /reservations/:id/seats/:seatId`.
 
-Locking each seat the instant it is clicked was the alternative, and it was rejected:
+Three consequences follow, and each is handled explicitly rather than left implicit.
 
-- **Rule 2 is a property of a whole selection, not of one seat.** Someone building up
-  `5, 6, 7` passes through the intermediate state `5`, which may itself strand seat 4. Locking
-  per click means either validating states the user never intended to submit, or deferring
-  validation and holding seats the rules would ultimately refuse.
-- **It converts every idle browse into inventory.** A user who clicks a seat and wanders off
-  removes it from sale for 15 minutes. Committing explicitly means a hold represents someone
-  who actually wants the seats.
-- **It multiplies write traffic.** Each click becomes a lock, and each correction becomes a
-  release, on the row that is already the contention point.
+**One clock, owned by the selection.** The countdown starts with the first seat and is never
+touched again — `addSeatToHold` deliberately leaves `expires_at` alone. A selection that
+grows for five minutes has ten minutes left, not fifteen. The corollary is that a user who
+deselects everything and starts again does get a fresh fifteen minutes; closing that would
+mean tracking released holds per user, which buys little against a cost that only a
+deliberate camper pays.
 
-The cost is a window between clicking and committing in which the seats are not yet yours.
-That window is closed correctly rather than hidden: the seat map refreshes every four
-seconds, a seat taken from under a pending selection is dropped from it automatically, and if
-someone commits first the loser gets a `409` explaining exactly what happened.
+**Both rules are re-checked on every edit, in both directions.** They are statements about
+the finished run, not about individual clicks, so `addSeatToHold` and `removeSeatFromHold`
+validate the _whole_ resulting selection rather than the delta. Giving a seat back is
+therefore refusable: dropping one out of the middle would break Rule 1, and dropping one off
+the end can strand its neighbour under Rule 2. Both are refused with a reason instead of
+being silently repaired.
+
+Releasing the _entire_ reservation is never refused, even when it leaves a seat stranded.
+That asymmetry is deliberate: a customer must always be able to give everything back, and
+the seat they strand is exactly the pre-existing gap that Rule 2 already forgives the next
+person for. It also means every refusal above has an escape hatch, which is what the wording
+of those errors points at.
+
+**Click order can matter.** Someone who wants `5, 6, 7` in a row where seat 4 is already
+taken has to start at 5: clicking 6 first passes through the intermediate state `4, 6`,
+which strands seat 5, and is refused. The same three seats are reachable, but not by every
+route to them. Enforcing at every step is still the right trade: the refusal arrives on the
+click that caused it, with the row diagram and a suggestion, whereas deferring Rule 2 to a
+commit step would move the rejection to the least useful moment — after the user believes
+they have finished.
+
+The write traffic this creates lands on the row that is already the contention point, which
+is precisely why the advisory lock is per `(screening, row)` rather than anything coarser.
+
+**What is not bounded.** Nothing limits how many live holds one customer may have on one
+screening: a second tab starts a second selection, with its own row and its own clock. The
+seat cap is per reservation, so it does not bound the total either. That was true before
+seats became reservable on click, but clicking makes it effortless rather than deliberate,
+and a real box office would want a per-customer cap here.
 
 ## A screening that has started cannot be sold
 
@@ -161,24 +209,26 @@ When the update matches nothing, we read the row once, purely to produce a usefu
 only, so the ordinary case is one round trip. Confirming or releasing twice is a no-op rather
 than an error, which makes both endpoints safe to retry.
 
-`createHold` is the exception and does need a transaction: it validates a whole cinema row
-and then writes, and those two steps must be seen as one.
+The three seat-level writes — `createHold`, `addSeatToHold`, `removeSeatFromHold` — are the
+exception and do need a transaction: each validates a whole cinema row and then writes, and
+those two steps must be seen as one.
 
 ## Error contract
 
 Every non-2xx response is `{ error: { code, message, details? } }`.
 
-| Status | Meaning              | Examples                                                |
-| ------ | -------------------- | ------------------------------------------------------- |
-| 400    | Malformed request    | `VALIDATION_FAILED`                                     |
-| 401    | Not signed in        | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`                  |
-| 404    | Absent, or not yours | `RESERVATION_NOT_FOUND`                                 |
-| 409    | The world moved on   | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED`, `SCREENING_STARTED` |
-| 422    | You broke a rule     | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT`     |
+| Status | Meaning              | Examples                                                                |
+| ------ | -------------------- | ----------------------------------------------------------------------- |
+| 400    | Malformed request    | `VALIDATION_FAILED`                                                     |
+| 401    | Not signed in        | `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`                                  |
+| 404    | Absent, or not yours | `RESERVATION_NOT_FOUND`                                                 |
+| 409    | The world moved on   | `SEAT_UNAVAILABLE`, `HOLD_EXPIRED`, `SCREENING_STARTED`                 |
+| 422    | You broke a rule     | `NOT_CONSECUTIVE`, `MULTIPLE_ROWS`, `ISOLATED_SEAT`, `SEAT_NOT_AT_EDGE` |
 
 The 409/422 split is deliberate: 409 means "the world moved, refresh and retry", 422 means "this
 selection is not allowed no matter when you send it". The client treats them differently —
-409 clears the selection and refreshes, 422 explains the rule.
+409 re-reads the seat map before showing the reason, 422 just explains the rule. Either way
+the click leaves the reservation exactly as it was.
 
 Rule violations carry a `details.diagram` such as `# # . * * . . . . .`, in the same notation
 used throughout. It is rendered in the UI and asserted in tests.

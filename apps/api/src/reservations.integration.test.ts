@@ -24,7 +24,14 @@ let screeningId: number;
 let alice: string;
 let bob: string;
 
+/** Every screening this run created, torn down together at the end. */
+const ownScreenings: number[] = [];
+
 const PASSWORD = 'Password123!';
+
+function bearer(token: string): string {
+  return `Bearer ${token}`;
+}
 
 async function signUp(app: Express, label: string): Promise<string> {
   const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
@@ -35,10 +42,32 @@ async function signUp(app: Express, label: string): Promise<string> {
   return response.body.token as string;
 }
 
-async function seatMap(token: string): Promise<SeatMap> {
+/**
+ * A private screening in the seeded hall, far enough in the future that it can never
+ * collide with the programme. Each one is an empty auditorium, which is what lets a
+ * group of tests have rows to itself.
+ */
+async function createScreening(): Promise<number> {
+  const { rows } = await pool.query<{ id: number }>(
+    `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
+     SELECT m.id, a.id, now() + interval '400 days' + make_interval(secs => $1::int)
+       FROM movies m CROSS JOIN auditoriums a
+      ORDER BY m.id, a.id
+      LIMIT 1
+     RETURNING id`,
+    [Math.floor(Math.random() * 20_000_000)],
+  );
+  const created = rows[0];
+  if (!created)
+    throw new Error('Seed data missing - start the API once to seed, or run RUN_SEED=true.');
+  ownScreenings.push(created.id);
+  return created.id;
+}
+
+async function seatMap(token: string, id: number = screeningId): Promise<SeatMap> {
   const response = await request(app)
-    .get(`/api/screenings/${screeningId}/seatmap`)
-    .set('authorization', `Bearer ${token}`)
+    .get(`/api/screenings/${id}/seatmap`)
+    .set('authorization', bearer(token))
     .expect(200);
   return response.body as SeatMap;
 }
@@ -53,11 +82,35 @@ function seatIds(map: SeatMap, rowLabel: string, numbers: number[]): number[] {
   });
 }
 
-function hold(token: string, ids: number[]) {
+function seatId(map: SeatMap, rowLabel: string, number: number): number {
+  return seatIds(map, rowLabel, [number])[0]!;
+}
+
+function seatStatus(map: SeatMap, rowLabel: string, number: number): string {
+  const row = map.rows.find((item) => item.label === rowLabel);
+  const seat = row?.seats.find((item) => item.seatNumber === number);
+  if (!seat) throw new Error(`Seat ${rowLabel}${number} not found`);
+  return seat.status;
+}
+
+function hold(token: string, ids: number[], id: number = screeningId) {
   return request(app)
-    .post(`/api/screenings/${screeningId}/reservations`)
-    .set('authorization', `Bearer ${token}`)
+    .post(`/api/screenings/${id}/reservations`)
+    .set('authorization', bearer(token))
     .send({ seatIds: ids });
+}
+
+function addSeat(token: string, reservationId: string, seat: number) {
+  return request(app)
+    .post(`/api/reservations/${reservationId}/seats`)
+    .set('authorization', bearer(token))
+    .send({ seatId: seat });
+}
+
+function removeSeat(token: string, reservationId: string, seat: number) {
+  return request(app)
+    .delete(`/api/reservations/${reservationId}/seats/${seat}`)
+    .set('authorization', bearer(token));
 }
 
 beforeAll(async () => {
@@ -67,27 +120,15 @@ beforeAll(async () => {
   await runSeed();
   app = createApp();
 
-  // A private screening in the seeded hall keeps this run isolated from every other.
-  const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO screenings (movie_id, auditorium_id, starts_at)
-     SELECT m.id, a.id, now() + interval '400 days' + (random() * interval '300 days')
-       FROM movies m CROSS JOIN auditoriums a
-      ORDER BY m.id, a.id
-      LIMIT 1
-     RETURNING id`,
-  );
-  const created = rows[0];
-  if (!created)
-    throw new Error('Seed data missing - start the API once to seed, or run RUN_SEED=true.');
-  screeningId = created.id;
+  screeningId = await createScreening();
 
   alice = await signUp(app, 'alice');
   bob = await signUp(app, 'bob');
 });
 
 afterAll(async () => {
-  await pool.query('DELETE FROM reservations WHERE screening_id = $1', [screeningId]);
-  await pool.query('DELETE FROM screenings WHERE id = $1', [screeningId]);
+  await pool.query('DELETE FROM reservations WHERE screening_id = ANY($1::int[])', [ownScreenings]);
+  await pool.query('DELETE FROM screenings WHERE id = ANY($1::int[])', [ownScreenings]);
   await closePool();
 });
 
@@ -320,6 +361,52 @@ describe('hold lifecycle', () => {
     expect(afterSweep.body.error.code).toBe('HOLD_EXPIRED');
   });
 
+  it('steps over a lapsed hold somebody else has locked instead of queueing behind it', async () => {
+    // The reaper runs while holding the per-row advisory lock, so if it could wait on a
+    // reservation row it would be holding one lock and blocking on another - a deadlock
+    // with anyone queueing for that row. It must skip and move on; the next pass gets it.
+    const map = await seatMap(alice);
+    const created = await hold(alice, seatIds(map, 'D', [1, 2])).expect(201);
+    const reservationId = created.body.reservation.id as string;
+
+    await pool.query(
+      `UPDATE reservations
+          SET created_at = now() - interval '16 minutes',
+              expires_at = now() - interval '1 minute'
+        WHERE id = $1`,
+      [reservationId],
+    );
+
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT id FROM reservations WHERE id = $1 FOR UPDATE', [reservationId]);
+
+      // Would hang here, and eventually deadlock in the real code path, without SKIP LOCKED.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const blocked = new Promise<'blocked'>((resolve) => {
+        timer = setTimeout(() => resolve('blocked'), 2000);
+      });
+      try {
+        expect(await Promise.race([releaseExpiredHolds(), blocked])).not.toBe('blocked');
+      } finally {
+        clearTimeout(timer);
+      }
+
+      await holder.query('ROLLBACK');
+    } finally {
+      holder.release();
+    }
+
+    // And once nobody is holding the row, the ordinary pass retires it.
+    await releaseExpiredHolds();
+    const { rows } = await pool.query<{ status: string }>(
+      'SELECT status FROM reservations WHERE id = $1',
+      [reservationId],
+    );
+    expect(rows[0]!.status).toBe('expired');
+  });
+
   it('confirms a hold into a booking', async () => {
     const map = await seatMap(alice);
     const created = await hold(alice, seatIds(map, 'L', [1, 2])).expect(201);
@@ -384,5 +471,190 @@ describe('hold lifecycle', () => {
     expect(otherSeat.status).toBe('reserved');
     expect(otherSeat.mine).toBe(false);
     expect(otherSeat.holdExpiresAt).toBeNull();
+  });
+});
+
+/**
+ * The interactive flow: a seat is Reserved on the click that selects it, the whole
+ * selection shares the one countdown that started with its first seat, and deselecting
+ * puts a seat back immediately.
+ *
+ * These run against their own screening so each case can have a row to itself.
+ */
+describe('selecting seats one at a time', () => {
+  let solo: number;
+
+  beforeAll(async () => {
+    solo = await createScreening();
+  });
+
+  it('reserves on the first click and keeps one clock for the whole selection', async () => {
+    const map = await seatMap(alice, solo);
+    const created = await hold(alice, [seatId(map, 'A', 3)], solo).expect(201);
+    const first = created.body.reservation;
+
+    expect(first.status).toBe('held');
+    expect(first.seats).toHaveLength(1);
+    expect(
+      Math.round(
+        (new Date(first.expiresAt).getTime() - new Date(first.createdAt).getTime()) / 60_000,
+      ),
+    ).toBe(15);
+
+    // Reserved for everybody else straight away - there is no confirmation step in between.
+    expect(seatStatus(await seatMap(bob, solo), 'A', 3)).toBe('reserved');
+
+    const extended = await addSeat(alice, first.id, seatId(map, 'A', 4)).expect(200);
+    expect(
+      extended.body.reservation.seats.map((seat: { seatNumber: number }) => seat.seatNumber),
+    ).toEqual([3, 4]);
+
+    // The countdown belongs to the selection, not to the seat: a later seat must not buy
+    // the user more time than the first one started.
+    expect(extended.body.reservation.createdAt).toBe(first.createdAt);
+    expect(extended.body.reservation.expiresAt).toBe(first.expiresAt);
+
+    // A click that crosses with a retry is a no-op rather than an error.
+    const repeat = await addSeat(alice, first.id, seatId(map, 'A', 4)).expect(200);
+    expect(repeat.body.reservation.seats).toHaveLength(2);
+  });
+
+  it('frees a seat the moment it is deselected', async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'B', [1, 2, 3]);
+    const created = await hold(alice, ids, solo).expect(201);
+
+    const shrunk = await removeSeat(alice, created.body.reservation.id, ids[2]!).expect(200);
+    expect(
+      shrunk.body.reservation.seats.map((seat: { seatNumber: number }) => seat.seatNumber),
+    ).toEqual([1, 2]);
+
+    // No sweeper, no expiry, no confirmation - it is back on sale immediately.
+    expect(seatStatus(await seatMap(bob, solo), 'B', 3)).toBe('available');
+    await hold(bob, [ids[2]!], solo).expect(201);
+  });
+
+  it('treats a repeated deselection as a no-op rather than an error', async () => {
+    // A response that never arrived and a click sent twice are the same request here, and
+    // neither should tell the user something went wrong.
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'M', [1, 2]);
+    const created = await hold(alice, ids, solo).expect(201);
+
+    const first = await removeSeat(alice, created.body.reservation.id, ids[1]!).expect(200);
+    const again = await removeSeat(alice, created.body.reservation.id, ids[1]!).expect(200);
+    expect(again.body.reservation.seats).toEqual(first.body.reservation.seats);
+  });
+
+  it('refuses to drop a seat out of the middle of a selection', async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'C', [4, 5, 6]);
+    const created = await hold(alice, ids, solo).expect(201);
+
+    const response = await removeSeat(alice, created.body.reservation.id, ids[1]!).expect(422);
+    expect(response.body.error.code).toBe('SEAT_NOT_AT_EDGE');
+
+    // And nothing was given back on the way to that answer.
+    expect(seatStatus(await seatMap(bob, solo), 'C', 5)).toBe('reserved');
+  });
+
+  it('refuses a deselection that would strand a neighbour', async () => {
+    const map = await seatMap(bob, solo);
+    const ids = seatIds(map, 'H', [1, 2, 3]);
+    await hold(bob, [ids[0]!], solo).expect(201);
+    const created = await hold(alice, [ids[1]!, ids[2]!], solo).expect(201);
+
+    const response = await removeSeat(alice, created.body.reservation.id, ids[1]!).expect(422);
+    expect(response.body.error.code).toBe('ISOLATED_SEAT');
+    expect(response.body.error.details.seatNumbers).toEqual([2]);
+  });
+
+  it('releases the whole reservation when the last seat is deselected', async () => {
+    const map = await seatMap(alice, solo);
+    const only = seatId(map, 'D', 1);
+    const created = await hold(alice, [only], solo).expect(201);
+
+    const response = await removeSeat(alice, created.body.reservation.id, only).expect(200);
+    expect(response.body.reservation.status).toBe('cancelled');
+    expect(response.body.reservation.seats).toEqual([]);
+    expect(seatStatus(await seatMap(bob, solo), 'D', 1)).toBe('available');
+  });
+
+  it('refuses a seat in another row', async () => {
+    const map = await seatMap(alice, solo);
+    const created = await hold(alice, [seatId(map, 'E', 1)], solo).expect(201);
+
+    const response = await addSeat(alice, created.body.reservation.id, seatId(map, 'F', 1)).expect(
+      422,
+    );
+    expect(response.body.error.code).toBe('MULTIPLE_ROWS');
+  });
+
+  it('refuses a seat that would leave a gap', async () => {
+    const map = await seatMap(alice, solo);
+    const created = await hold(alice, [seatId(map, 'G', 1)], solo).expect(201);
+
+    const response = await addSeat(alice, created.body.reservation.id, seatId(map, 'G', 3)).expect(
+      422,
+    );
+    expect(response.body.error.code).toBe('NOT_CONSECUTIVE');
+  });
+
+  it('reports a seat that was taken between two clicks', async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'I', [1, 2]);
+    const created = await hold(alice, [ids[0]!], solo).expect(201);
+    await hold(bob, [ids[1]!], solo).expect(201);
+
+    const response = await addSeat(alice, created.body.reservation.id, ids[1]!).expect(409);
+    expect(response.body.error.code).toBe('SEAT_UNAVAILABLE');
+  });
+
+  it("will not let anyone edit somebody else's selection", async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'J', [1, 2]);
+    const created = await hold(alice, [ids[0]!], solo).expect(201);
+
+    await addSeat(bob, created.body.reservation.id, ids[1]!).expect(404);
+    await removeSeat(bob, created.body.reservation.id, ids[0]!).expect(404);
+  });
+
+  it('freezes the seats once the reservation is booked', async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'K', [1, 2]);
+    const created = await hold(alice, [ids[0]!], solo).expect(201);
+    const { id } = created.body.reservation;
+
+    await request(app)
+      .post(`/api/reservations/${id}/confirm`)
+      .set('authorization', bearer(alice))
+      .expect(200);
+
+    const added = await addSeat(alice, id, ids[1]!).expect(409);
+    expect(added.body.error.code).toBe('ALREADY_BOOKED');
+
+    const removed = await removeSeat(alice, id, ids[0]!).expect(409);
+    expect(removed.body.error.code).toBe('ALREADY_BOOKED');
+  });
+
+  it('refuses to edit a selection whose time ran out', async () => {
+    const map = await seatMap(alice, solo);
+    const ids = seatIds(map, 'L', [1, 2]);
+    const created = await hold(alice, [ids[0]!], solo).expect(201);
+    const { id } = created.body.reservation;
+
+    await pool.query(
+      `UPDATE reservations
+          SET created_at = now() - interval '16 minutes',
+              expires_at = now() - interval '1 minute'
+        WHERE id = $1`,
+      [id],
+    );
+
+    const added = await addSeat(alice, id, ids[1]!).expect(409);
+    expect(added.body.error.code).toBe('HOLD_EXPIRED');
+
+    const removed = await removeSeat(alice, id, ids[0]!).expect(409);
+    expect(removed.body.error.code).toBe('HOLD_EXPIRED');
   });
 });
