@@ -13,7 +13,7 @@ lumen-cinema/
 │   ├── src/hooks/          useSeatMap (polling), useSeatSelection (editing the live hold)
 │   └── src/components/     rendering
 ├── e2e/                    Playwright, driving the browser against the real stack
-├── docs/                   ERD, this document
+├── docs/                   ERD, API reference, this document
 └── docker-compose.yml      db + api + web
 ```
 
@@ -29,6 +29,25 @@ the server reports, so what is drawn is always what is actually held.
 npm workspaces, one lockfile, one TypeScript project graph. `@lumen/shared` is a real
 package rather than a folder of copied files, which is what allows the seat rules to be
 literally the same code on both sides of the wire.
+
+## Where each requirement lives
+
+| Requirement                                                   | Where                                                                 |
+| ------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Email + password sign-in, JWT sessions                        | [`authService.ts`](../apps/api/src/services/authService.ts)           |
+| Seating map with a live status for every seat                 | [`screeningService.ts`](../apps/api/src/services/screeningService.ts) |
+| 115 seats — 10 rows of 10, 3 rows of 5                        | [`layout.ts`](../packages/shared/src/layout.ts)                       |
+| Seat status Available / Reserved / Booked, derived not stored | [`ERD.md`](ERD.md)                                                    |
+| A seat is Reserved on the click that selects it               | [`useSeatSelection.ts`](../apps/web/src/hooks/useSeatSelection.ts)    |
+| One 15-minute clock per selection, started by its first seat  | `addSeatToHold` never touches `expires_at`                            |
+| Deselecting a seat frees it immediately                       | `DELETE /reservations/:id/seats/:seatId`                              |
+| Rule 1 — consecutive seats in one row, enforced server-side   | [`seatRules.ts`](../packages/shared/src/seatRules.ts)                 |
+| Rule 2 — no isolated empty seat, enforced server-side         | Same module, inside the reservation transaction                       |
+| Completing a reservation is held → booked, nothing else       | `confirmHold`                                                         |
+| A hold released automatically when it lapses                  | `HOLD_MINUTES`; expiry is a property of every read                    |
+| Two users can never take the same seat                        | Partial unique index + per-row advisory lock, below                   |
+| An error when somebody else already took the seat             | `409 SEAT_UNAVAILABLE`, surfaced as a toast                           |
+| Sign-in rate limiting                                         | [`rateLimit.ts`](../apps/api/src/middleware/rateLimit.ts)             |
 
 ## The three problems worth solving
 
