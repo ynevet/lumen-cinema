@@ -1,11 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { pinoHttp } from 'pino-http';
 import { config } from './config.js';
-import { logger } from './logger.js';
 import { pool } from './db/pool.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { httpLogger } from './middleware/httpLogger.js';
 import { apiLimiter, authLimiter } from './middleware/rateLimit.js';
 import { authRoutes } from './routes/authRoutes.js';
 import { screeningRoutes } from './routes/screeningRoutes.js';
@@ -26,18 +25,7 @@ export function createApp(): express.Express {
     }),
   );
   app.use(express.json({ limit: '64kb' }));
-  app.use(
-    pinoHttp({
-      logger,
-      // Health checks would otherwise drown out real traffic.
-      autoLogging: { ignore: (req) => req.url === '/api/health' },
-      customLogLevel: (_req, res, err) => {
-        if (err || res.statusCode >= 500) return 'error';
-        if (res.statusCode >= 400) return 'warn';
-        return 'info';
-      },
-    }),
-  );
+  app.use(httpLogger);
 
   app.get('/api/health', async (_req, res) => {
     try {
